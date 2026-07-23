@@ -9,6 +9,7 @@ re-classification happens here, that already happened at ingest time.
 """
 from collections import defaultdict
 
+from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.issue_status import IssueStatus
 
@@ -21,9 +22,9 @@ def build_dashboard(batch_id: int) -> dict:
     }
 
     totals = _build_totals(transactions)
-    aggregator_summary = _build_partner_summary(transactions, issue_statuses, bucket="aggregator")
-    bank_summary = _build_partner_summary(transactions, issue_statuses, bucket="bank_wallet")
-    sct_summary = _build_sct_summary(transactions, issue_statuses)
+    aggregator_summary = _build_partner_summary(transactions, issue_statuses, bucket="aggregator", batch_id=batch_id)
+    bank_summary = _build_partner_summary(transactions, issue_statuses, bucket="bank_wallet", batch_id=batch_id)
+    sct_summary = _build_sct_summary(transactions, issue_statuses, batch_id=batch_id)
 
     return {
         "totals": totals,
@@ -31,6 +32,24 @@ def build_dashboard(batch_id: int) -> dict:
         "bank_summary": bank_summary,
         "sct_summary": sct_summary,
     }
+
+
+def _get_last_solved_comment(side: str, partner_name: str | None, category: str, current_batch_id: int) -> str | None:
+    prev = (
+        IssueStatus.query
+        .filter(
+            IssueStatus.side == side,
+            IssueStatus.partner_name == partner_name,
+            IssueStatus.category == category,
+            IssueStatus.status == "solved",
+            IssueStatus.batch_id != current_batch_id,
+            IssueStatus.comment != None,
+            IssueStatus.comment != ""
+        )
+        .order_by(IssueStatus.updated_at.desc())
+        .first()
+    )
+    return prev.comment if prev else None
 
 
 def _build_totals(transactions: list[Transaction]) -> dict:
@@ -56,7 +75,7 @@ def _build_totals(transactions: list[Transaction]) -> dict:
     }
 
 
-def _build_partner_summary(transactions: list[Transaction], issue_statuses: dict, bucket: str) -> list[dict]:
+def _build_partner_summary(transactions: list[Transaction], issue_statuses: dict, bucket: str, batch_id: int) -> list[dict]:
     by_partner: dict[str, list[Transaction]] = defaultdict(list)
     for t in transactions:
         if t.partner_type == bucket:
@@ -72,14 +91,27 @@ def _build_partner_summary(transactions: list[Transaction], issue_statuses: dict
         for category, cat_rows in sorted(by_category.items()):
             side = cat_rows[0].error_side
             status_row = issue_statuses.get((side, partner_name, category))
+            # Auto-create IssueStatus row if it doesn't exist yet
+            if not status_row:
+                status_row = IssueStatus(
+                    batch_id=batch_id,
+                    side=side,
+                    partner_name=partner_name,
+                    category=category,
+                    status="pending",
+                )
+                db.session.add(status_row)
+                db.session.flush()  # get the id
+                issue_statuses[(side, partner_name, category)] = status_row
             issues.append({
-                "id": status_row.id if status_row else None,
+                "id": status_row.id,
                 "side": side,
                 "category": category,
                 "count": len(cat_rows),
                 "affected_mids": sorted({r.mid for r in cat_rows if r.mid})[:20],
-                "status": status_row.status if status_row else "pending",
-                "comment": status_row.comment if status_row else None,
+                "status": status_row.status,
+                "comment": status_row.comment,
+                "last_solved_comment": _get_last_solved_comment(side, partner_name, category, batch_id),
             })
 
         failed_count = sum(1 for r in rows if (r.status or "").lower() == "failed")
@@ -96,7 +128,7 @@ def _build_partner_summary(transactions: list[Transaction], issue_statuses: dict
     return sorted(result, key=lambda p: -(p["failed"] + p["pending"]))
 
 
-def _build_sct_summary(transactions: list[Transaction], issue_statuses: dict) -> dict:
+def _build_sct_summary(transactions: list[Transaction], issue_statuses: dict, batch_id: int) -> dict:
     sct_rows = [t for t in transactions if t.error_side == "sct"]
 
     by_category: dict[str, list[Transaction]] = defaultdict(list)
@@ -106,14 +138,30 @@ def _build_sct_summary(transactions: list[Transaction], issue_statuses: dict) ->
     issues = []
     for category, rows in sorted(by_category.items()):
         status_row = issue_statuses.get(("sct", None, category))
+        # Auto-create IssueStatus row if it doesn't exist yet
+        if not status_row:
+            status_row = IssueStatus(
+                batch_id=batch_id,
+                side="sct",
+                partner_name=None,
+                category=category,
+                status="pending",
+            )
+            db.session.add(status_row)
+            db.session.flush()  # get the id
+            issue_statuses[("sct", None, category)] = status_row
         issues.append({
-            "id": status_row.id if status_row else None,
+            "id": status_row.id,
             "category": category,
             "count": len(rows),
             "affected_mids": sorted({r.mid for r in rows if r.mid})[:20],
-            "status": status_row.status if status_row else "pending",
-            "comment": status_row.comment if status_row else None,
+            "status": status_row.status,
+            "comment": status_row.comment,
+            "last_solved_comment": _get_last_solved_comment("sct", None, category, batch_id),
         })
+
+    # Commit any newly created IssueStatus rows
+    db.session.commit()
 
     return {
         "total_issues": len(sct_rows),

@@ -9,12 +9,14 @@ export type FlatIssueRow = {
   affectedMids: string[];
   status: IssueStatusValue;
   comment: string | null;
+  last_solved_comment?: string | null;
 };
 
 const STATUS_OPTIONS: { value: IssueStatusValue; label: string; style: string }[] = [
   { value: "pending", label: "Pending", style: "bg-neutral-100 text-neutral-700 border-neutral-300" },
   { value: "in_progress", label: "In Progress", style: "bg-amber-50 text-amber-800 border-amber-300" },
   { value: "solved", label: "Solved", style: "bg-emerald-50 text-emerald-800 border-emerald-300" },
+  { value: "exclude", label: "Exclude", style: "bg-gray-200 text-gray-600 border-gray-300" },
 ];
 
 function IssueTableRow({
@@ -46,6 +48,17 @@ function IssueTableRow({
     setSaving(true);
     try {
       await onUpdateIssue(row.issueId, { comment });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleApplySuggestion = async (suggestedComment: string) => {
+    if (!row.issueId) return;
+    setSaving(true);
+    try {
+      await onUpdateIssue(row.issueId, { status: "solved", comment: suggestedComment });
+      setComment(suggestedComment);
     } finally {
       setSaving(false);
     }
@@ -95,6 +108,18 @@ function IssueTableRow({
           rows={2}
           className="w-full text-xs border border-neutral-300 rounded-md px-2.5 py-1.5 focus:ring-1 focus:ring-neutral-400 focus:outline-none resize-y min-h-[42px] bg-white text-neutral-800 placeholder-neutral-400"
         />
+        {row.last_solved_comment && row.status !== "solved" && (
+          <div className="text-[10px] text-amber-600 mt-1 flex items-wrap items-center gap-1 leading-normal">
+            <span>💡 Suggestion: "{row.last_solved_comment}"</span>
+            <button
+              type="button"
+              onClick={() => handleApplySuggestion(row.last_solved_comment!)}
+              className="text-neutral-900 underline font-semibold hover:text-black cursor-pointer inline-block"
+            >
+              [Apply]
+            </button>
+          </div>
+        )}
         {saving && <span className="text-[10px] text-neutral-400 block mt-0.5">Saving…</span>}
       </td>
     </tr>
@@ -123,7 +148,7 @@ export default function IssueTable({
             <th className="py-3 px-4">Issue Category</th>
             <th className="py-3 px-4">Affected MIDs</th>
             <th className="py-3 px-4 text-center">Txns</th>
-            <th className="py-3 px-4">Status</th>
+            <th className="py-3 px-4">Solved Status</th>
             <th className="py-3 px-4 min-w-[220px]">Ops Comment</th>
           </tr>
         </thead>

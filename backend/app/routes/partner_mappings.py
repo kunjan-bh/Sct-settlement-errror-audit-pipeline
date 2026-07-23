@@ -145,6 +145,14 @@ def delete_mapping(mapping_id):
     return "", 204
 
 
+@partner_mappings_bp.delete("/aggregators/<string:partner_name>")
+def delete_aggregator(partner_name):
+    """Deletes all codes associated with a specific aggregator."""
+    PartnerMapping.query.filter_by(bucket="aggregator", partner_name=partner_name).delete()
+    db.session.commit()
+    return "", 204
+
+
 @partner_mappings_bp.get("/aggregators")
 def list_aggregator_names():
     """Distinct aggregator names -- powers a dropdown so the frontend can

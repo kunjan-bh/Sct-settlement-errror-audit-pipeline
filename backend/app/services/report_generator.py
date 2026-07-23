@@ -48,6 +48,12 @@ def generate_report_bytes(batch_id: int) -> bytes:
     fill_sub_header = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
     fill_zebra = PatternFill(start_color="F9FBFD", end_color="F9FBFD", fill_type="solid")
 
+    fill_solved = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    font_solved = Font(name="Calibri", size=10, color="006100", bold=True)
+
+    fill_pending = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+    font_pending = Font(name="Calibri", size=10, color="9C5700", bold=True)
+
     thin_border_side = Side(border_style="thin", color="D9D9D9")
     border_cell = Border(left=thin_border_side, right=thin_border_side, top=thin_border_side, bottom=thin_border_side)
 
@@ -177,6 +183,9 @@ def generate_report_bytes(batch_id: int) -> bytes:
 
         # Appended columns lookup
         issue_obj = issue_status_map.get((txn.error_side, txn.partner_name if txn.error_side != "sct" else None, txn.error_category))
+        # Skip transactions whose issue is marked as 'exclude'
+        if issue_obj and issue_obj.status == "exclude":
+            continue
         solved_status = issue_obj.status.replace("_", " ").title() if issue_obj else "Pending"
         solved_remarks = issue_obj.comment if issue_obj else ""
 
@@ -197,6 +206,16 @@ def generate_report_bytes(batch_id: int) -> bytes:
                 cell.alignment = align_left
             else:
                 cell.alignment = align_left
+
+            # Solved Status formatting in Processed Records (Sheet 2)
+            if col_idx == len(orig_headers) + 3:
+                cell.alignment = align_center
+                if val == "Solved":
+                    cell.fill = fill_solved
+                    cell.font = font_solved
+                else:
+                    cell.fill = fill_pending
+                    cell.font = font_pending
 
     # ==========================================
     # SHEET 3: Issue Summary
@@ -221,11 +240,22 @@ def generate_report_bytes(batch_id: int) -> bytes:
             ws3.cell(row=curr_row, column=1, value=partner["partner_name"]).alignment = align_left
             ws3.cell(row=curr_row, column=2, value=issue["category"]).alignment = align_left
             ws3.cell(row=curr_row, column=3, value=issue["count"]).alignment = align_right
-            ws3.cell(row=curr_row, column=4, value=issue["status"].replace("_", " ").title()).alignment = align_center
+            
+            status_val = issue["status"].replace("_", " ").title()
+            status_cell = ws3.cell(row=curr_row, column=4, value=status_val)
+            status_cell.alignment = align_center
+            if status_val == "Solved":
+                status_cell.fill = fill_solved
+                status_cell.font = font_solved
+            else:
+                status_cell.fill = fill_pending
+                status_cell.font = font_pending
+
             ws3.cell(row=curr_row, column=5, value=issue["comment"] or "").alignment = align_left
 
             for c in range(1, 6):
-                ws3.cell(row=curr_row, column=c).font = font_regular
+                if c != 4:  # status cell is formatted separately
+                    ws3.cell(row=curr_row, column=c).font = font_regular
                 ws3.cell(row=curr_row, column=c).border = border_cell
             curr_row += 1
 
@@ -234,11 +264,22 @@ def generate_report_bytes(batch_id: int) -> bytes:
         ws3.cell(row=curr_row, column=1, value="SCT").alignment = align_left
         ws3.cell(row=curr_row, column=2, value=sct_issue["category"]).alignment = align_left
         ws3.cell(row=curr_row, column=3, value=sct_issue["count"]).alignment = align_right
-        ws3.cell(row=curr_row, column=4, value=sct_issue["status"].replace("_", " ").title()).alignment = align_center
+        
+        status_val = sct_issue["status"].replace("_", " ").title()
+        status_cell = ws3.cell(row=curr_row, column=4, value=status_val)
+        status_cell.alignment = align_center
+        if status_val == "Solved":
+            status_cell.fill = fill_solved
+            status_cell.font = font_solved
+        else:
+            status_cell.fill = fill_pending
+            status_cell.font = font_pending
+
         ws3.cell(row=curr_row, column=5, value=sct_issue["comment"] or "").alignment = align_left
 
         for c in range(1, 6):
-            ws3.cell(row=curr_row, column=c).font = font_regular
+            if c != 4:  # status cell is formatted separately
+                ws3.cell(row=curr_row, column=c).font = font_regular
             ws3.cell(row=curr_row, column=c).border = border_cell
         curr_row += 1
 

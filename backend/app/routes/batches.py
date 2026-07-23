@@ -129,11 +129,28 @@ def update_issue(batch_id, issue_id):
     data = request.get_json(force=True)
 
     if "status" in data:
-        if data["status"] not in ("pending", "in_progress", "solved"):
-            return jsonify({"error": "status must be pending, in_progress, or solved"}), 400
+        if data["status"] not in ("pending", "in_progress", "solved", "exclude"):
+            return jsonify({"error": "status must be pending, in_progress, solved, or exclude"}), 400
         issue.status = data["status"]
     if "comment" in data:
         issue.comment = data["comment"]
 
     db.session.commit()
     return jsonify(issue.to_dict())
+
+
+@batches_bp.delete("/<int:batch_id>")
+def delete_batch(batch_id):
+    """
+    Deletes the batch and all of its associated transactions and issue statuses.
+    """
+    from app.models.transaction import Transaction
+    batch = Batch.query.get_or_404(batch_id)
+
+    Transaction.query.filter_by(batch_id=batch.id).delete()
+    IssueStatus.query.filter_by(batch_id=batch.id).delete()
+
+    db.session.delete(batch)
+    db.session.commit()
+
+    return "", 204

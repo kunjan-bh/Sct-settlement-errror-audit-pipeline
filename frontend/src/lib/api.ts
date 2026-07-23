@@ -34,7 +34,7 @@ export type Batch = {
   notes: string | null;
 };
 
-export type IssueStatusValue = "pending" | "in_progress" | "solved";
+export type IssueStatusValue = "pending" | "in_progress" | "solved" | "exclude";
 
 export type Issue = {
   id: number | null;
@@ -44,6 +44,7 @@ export type Issue = {
   affected_mids: string[];
   status: IssueStatusValue;
   comment: string | null;
+  last_solved_comment?: string | null;
 };
 
 export type PartnerSummary = {
@@ -96,6 +97,8 @@ export const batchesApi = {
 
   updateIssue: (batchId: number, issueId: number, data: { status?: IssueStatusValue; comment?: string }) =>
     request<Issue>(`/batches/${batchId}/issues/${issueId}`, { method: "PATCH", body: JSON.stringify(data) }),
+
+  remove: (id: number) => request<void>(`/batches/${id}`, { method: "DELETE" }),
 };
 
 export const partnerMappingsApi = {
@@ -119,6 +122,9 @@ export const partnerMappingsApi = {
     request<PartnerMapping>(`/partner-mappings/${id}`, { method: "PUT", body: JSON.stringify(data) }),
 
   remove: (id: number) => request<void>(`/partner-mappings/${id}`, { method: "DELETE" }),
+
+  removeAggregator: (partnerName: string) =>
+    request<void>(`/partner-mappings/aggregators/${encodeURIComponent(partnerName)}`, { method: "DELETE" }),
 
   aggregatorNames: () => request<string[]>("/partner-mappings/aggregators"),
 };

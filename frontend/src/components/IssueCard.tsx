@@ -7,12 +7,14 @@ const STATUS_STYLES: Record<IssueStatusValue, string> = {
   pending: "bg-neutral-100 text-neutral-600",
   in_progress: "bg-amber-50 text-amber-700",
   solved: "bg-green-50 text-green-700",
+  exclude: "bg-gray-200 text-gray-600",
 };
 
 const STATUS_LABELS: Record<IssueStatusValue, string> = {
   pending: "Pending",
   in_progress: "In Progress",
   solved: "Solved",
+  exclude: "Exclude",
 };
 
 export default function IssueCard({
@@ -46,7 +48,7 @@ export default function IssueCard({
   };
 
   return (
-    <div className="border border-neutral-200 rounded-lg overflow-hidden">
+    <div className="border border-neutral-200 rounded-lg overflow-visible">
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-neutral-50 transition-colors"
@@ -72,7 +74,7 @@ export default function IssueCard({
             animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="overflow-hidden border-t border-neutral-100"
+            className="overflow-visible border-t border-neutral-100 relative z-10"
           >
             <div className="px-4 py-3 space-y-3">
               <div>
@@ -83,16 +85,17 @@ export default function IssueCard({
               </div>
 
               <div className="flex items-center gap-2">
-                <label className="text-xs text-neutral-400">Status</label>
+                <label className="text-xs text-neutral-400">Solved Status</label>
                 <select
                   value={issue.status}
                   disabled={saving}
                   onChange={(e) => handleStatusChange(e.target.value as IssueStatusValue)}
-                  className="border border-neutral-300 rounded-md px-2 py-1 text-sm"
+                  className="border border-neutral-300 rounded-md px-2 py-1 text-sm bg-white text-neutral-800"
                 >
                   <option value="pending">Pending</option>
                   <option value="in_progress">In Progress</option>
                   <option value="solved">Solved</option>
+                  <option value="exclude">Exclude</option>
                 </select>
               </div>
 
@@ -103,8 +106,28 @@ export default function IssueCard({
                   onChange={(e) => setComment(e.target.value)}
                   onBlur={handleCommentBlur}
                   placeholder='e.g. "Aggregator confirmed configuration fixed."'
-                  className="w-full border border-neutral-300 rounded-md px-3 py-2 text-sm h-16 resize-none"
+                  className="w-full border border-neutral-300 rounded-md px-3 py-2 text-sm h-16 resize-none bg-white text-neutral-800"
                 />
+                {issue.last_solved_comment && issue.status !== "solved" && (
+                  <div className="text-[10px] text-amber-600 mt-1 flex items-wrap items-center gap-1 leading-normal">
+                    <span>💡 Suggestion: "{issue.last_solved_comment}"</span>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setSaving(true);
+                        try {
+                          await onUpdate({ status: "solved", comment: issue.last_solved_comment! });
+                          setComment(issue.last_solved_comment!);
+                        } finally {
+                          setSaving(false);
+                        }
+                      }}
+                      className="text-neutral-900 underline font-semibold hover:text-black cursor-pointer inline-block"
+                    >
+                      [Apply]
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </motion.div>

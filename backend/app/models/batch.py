@@ -24,8 +24,8 @@ class Batch(db.Model):
     name = db.Column(db.String(64), unique=True, nullable=False, index=True)
 
     status = db.Column(db.String(16), nullable=False, default="open")
-    # "open" -> still processing/being worked on
-    # "finished" -> report generated, download available
+
+
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     finished_at = db.Column(db.DateTime, nullable=True)

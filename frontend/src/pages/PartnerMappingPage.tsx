@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { FiTrash2 } from "react-icons/fi";
 import { partnerMappingsApi, type PartnerMapping } from "../lib/api";
 
 /**
@@ -164,9 +165,10 @@ function BankWalletSection({
                 <td className="px-4 py-2 text-right">
                   <button
                     onClick={() => handleDelete(item.id)}
-                    className="text-neutral-400 hover:text-red-600 text-xs"
+                    className="text-neutral-400 hover:text-red-600 p-1 cursor-pointer transition-colors"
+                    title="Remove"
                   >
-                    Remove
+                    <FiTrash2 className="text-sm" />
                   </button>
                 </td>
               </tr>
@@ -230,6 +232,13 @@ function AggregatorSection({
     onChanged();
   };
 
+  const handleDeleteAggregator = async (name: string) => {
+    if (confirm(`Are you sure you want to delete all cooperative mappings under "${name}"?`)) {
+      await partnerMappingsApi.removeAggregator(name);
+      onChanged();
+    }
+  };
+
   return (
     <section className="space-y-4">
       <h2 className="text-lg font-medium text-neutral-800">Aggregators (grouped cooperatives)</h2>
@@ -266,9 +275,19 @@ function AggregatorSection({
         <div className="space-y-3">
           {groups.map(([name, items]) => (
             <div key={name} className="border border-neutral-200 rounded-lg overflow-hidden">
-              <div className="bg-neutral-50 px-4 py-2 text-sm font-medium text-neutral-700 flex justify-between">
+              <div className="bg-neutral-50 px-4 py-2 text-sm font-medium text-neutral-700 flex justify-between items-center">
                 <span>{name}</span>
-                <span className="text-neutral-400">{items.length} code(s)</span>
+                <div className="flex items-center gap-3">
+                  <span className="text-neutral-400 text-xs">{items.length} code(s)</span>
+                  <button
+                    onClick={() => handleDeleteAggregator(name)}
+                    className="inline-flex items-center gap-1 text-red-600 hover:text-red-800 text-xs font-semibold cursor-pointer transition-colors"
+                    title="Delete Map"
+                  >
+                    <FiTrash2 size={12} />
+                    Delete Mapp
+                  </button>
+                </div>
               </div>
               <div className="px-4 py-3 flex flex-wrap gap-2">
                 {items.map((item) => (
@@ -279,10 +298,10 @@ function AggregatorSection({
                     {item.member_code}
                     <button
                       onClick={() => handleDelete(item.id)}
-                      className="text-neutral-400 hover:text-red-600"
+                      className="text-neutral-400 hover:text-red-600 focus:outline-none cursor-pointer transition-colors"
                       title="Remove"
                     >
-                      ×
+                      <FiTrash2 size={10} />
                     </button>
                   </span>
                 ))}
