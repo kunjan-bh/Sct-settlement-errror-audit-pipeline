@@ -86,23 +86,25 @@ def generate_report_bytes(batch_id: int) -> bytes:
     ws1["B8"] = dashboard["totals"]["settlement_failed"]
     ws1["A9"] = "Transaction Failed (SCT):"
     ws1["B9"] = dashboard["totals"]["transaction_failed"]
+    ws1["A10"] = "Batch Notes:"
+    ws1["B10"] = batch.notes or ""
 
-    for row_idx in range(3, 10):
+    for row_idx in range(3, 11):
         ws1[f"A{row_idx}"].font = font_bold
         ws1[f"B{row_idx}"].font = font_regular
 
     # Table 1: Aggregator Summary
-    ws1["A12"] = "Aggregator Summary"
-    ws1["A12"].font = font_section
+    ws1["A13"] = "Aggregator Summary"
+    ws1["A13"].font = font_section
 
     headers_agg = ["Aggregator", "Failed Count", "Pending Count", "Unique Issues"]
     for col_idx, h in enumerate(headers_agg, start=1):
-        cell = ws1.cell(row=13, column=col_idx, value=h)
+        cell = ws1.cell(row=14, column=col_idx, value=h)
         cell.font = font_header
         cell.fill = fill_header
         cell.alignment = align_center
 
-    curr_row = 14
+    curr_row = 15
     for agg in dashboard["aggregator_summary"]:
         ws1.cell(row=curr_row, column=1, value=agg["partner_name"]).alignment = align_left
         ws1.cell(row=curr_row, column=2, value=agg["failed"]).alignment = align_right
@@ -163,7 +165,8 @@ def generate_report_bytes(batch_id: int) -> bytes:
         cell.fill = fill_header
         cell.alignment = align_center
 
-    for r_idx, txn in enumerate(transactions, start=2):
+    row_idx = 2
+    for txn in transactions:
         extra = txn.extra_data or {}
         # Populate original column values
         row_vals = []
@@ -183,11 +186,28 @@ def generate_report_bytes(batch_id: int) -> bytes:
 
         # Appended columns lookup
         issue_obj = issue_status_map.get((txn.error_side, txn.partner_name if txn.error_side != "sct" else None, txn.error_category))
-        # Skip transactions whose issue is marked as 'exclude'
-        if issue_obj and issue_obj.status == "exclude":
+        
+        override_obj = None
+        if issue_obj and issue_obj.mid_overrides and txn.mid in issue_obj.mid_overrides:
+            raw = issue_obj.mid_overrides[txn.mid]
+            # Support both old string format and new {status, remark} format
+            if isinstance(raw, dict):
+                override_obj = raw
+            else:
+                override_obj = {"status": raw, "remark": ""}
+
+        eff_status = (override_obj["status"] if override_obj else None) or (issue_obj.status if issue_obj else "pending")
+        
+        # Skip transactions whose issue (or override) is marked as 'exclude'
+        if eff_status == "exclude":
             continue
-        solved_status = issue_obj.status.replace("_", " ").title() if issue_obj else "Pending"
-        solved_remarks = issue_obj.comment if issue_obj else ""
+            
+        solved_status = eff_status.replace("_", " ").title()
+        # Override remark takes priority over group comment
+        if override_obj and override_obj.get("remark"):
+            solved_remarks = f"[MID Override] {override_obj['remark']}"
+        else:
+            solved_remarks = issue_obj.comment if issue_obj else ""
 
         row_vals.extend([
             txn.partner_name or "N/A",
@@ -199,7 +219,7 @@ def generate_report_bytes(batch_id: int) -> bytes:
         ])
 
         for col_idx, val in enumerate(row_vals, start=1):
-            cell = ws2.cell(row=r_idx, column=col_idx, value=val)
+            cell = ws2.cell(row=row_idx, column=col_idx, value=val)
             cell.font = font_regular
             cell.border = border_cell
             if col_idx <= len(orig_headers):
@@ -216,6 +236,7 @@ def generate_report_bytes(batch_id: int) -> bytes:
                 else:
                     cell.fill = fill_pending
                     cell.font = font_pending
+        row_idx += 1
 
     # ==========================================
     # SHEET 3: Issue Summary
@@ -234,38 +255,46 @@ def generate_report_bytes(batch_id: int) -> bytes:
         cell.alignment = align_center
 
     curr_row = 4
-    # 1. Aggregator & Bank issues
-    for partner in dashboard["aggregator_summary"] + dashboard["bank_summary"]:
-        for issue in partner["issues"]:
-            ws3.cell(row=curr_row, column=1, value=partner["partner_name"]).alignment = align_left
-            ws3.cell(row=curr_row, column=2, value=issue["category"]).alignment = align_left
-            ws3.cell(row=curr_row, column=3, value=issue["count"]).alignment = align_right
-            
-            status_val = issue["status"].replace("_", " ").title()
-            status_cell = ws3.cell(row=curr_row, column=4, value=status_val)
-            status_cell.alignment = align_center
-            if status_val == "Solved":
-                status_cell.fill = fill_solved
-                status_cell.font = font_solved
-            else:
-                status_cell.fill = fill_pending
-                status_cell.font = font_pending
-
-            ws3.cell(row=curr_row, column=5, value=issue["comment"] or "").alignment = align_left
-
-            for c in range(1, 6):
-                if c != 4:  # status cell is formatted separately
-                    ws3.cell(row=curr_row, column=c).font = font_regular
-                ws3.cell(row=curr_row, column=c).border = border_cell
-            curr_row += 1
-
-    # 2. SCT issues
-    for sct_issue in dashboard["sct_summary"]["issues"]:
-        ws3.cell(row=curr_row, column=1, value="SCT").alignment = align_left
-        ws3.cell(row=curr_row, column=2, value=sct_issue["category"]).alignment = align_left
-        ws3.cell(row=curr_row, column=3, value=sct_issue["count"]).alignment = align_right
+    
+    from collections import defaultdict
+    summary_counts = defaultdict(int)
+    summary_comments = {}
+    
+    for txn in transactions:
+        side = txn.error_side
+        partner = txn.partner_name if side != "sct" else "SCT"
+        category = txn.error_category or "Unclassified"
         
-        status_val = sct_issue["status"].replace("_", " ").title()
+        issue_obj = issue_status_map.get((side, txn.partner_name if side != "sct" else None, category))
+        
+        override_obj = None
+        if issue_obj and issue_obj.mid_overrides and txn.mid in issue_obj.mid_overrides:
+            raw = issue_obj.mid_overrides[txn.mid]
+            if isinstance(raw, dict):
+                override_obj = raw
+            else:
+                override_obj = {"status": raw, "remark": ""}
+
+        eff_status = (override_obj["status"] if override_obj else None) or (issue_obj.status if issue_obj else "pending")
+        if eff_status == "exclude":
+            continue
+            
+        key = (side, partner, category, eff_status)
+        summary_counts[key] += 1
+        if key not in summary_comments:
+             summary_comments[key] = issue_obj.comment if issue_obj else ""
+
+    # 1. Aggregator & Bank issues
+    agg_keys = sorted([k for k in summary_counts.keys() if k[0] != "sct"])
+    for key in agg_keys:
+        side, partner, category, eff_status = key
+        count = summary_counts[key]
+        
+        ws3.cell(row=curr_row, column=1, value=partner).alignment = align_left
+        ws3.cell(row=curr_row, column=2, value=category).alignment = align_left
+        ws3.cell(row=curr_row, column=3, value=count).alignment = align_right
+        
+        status_val = eff_status.replace("_", " ").title()
         status_cell = ws3.cell(row=curr_row, column=4, value=status_val)
         status_cell.alignment = align_center
         if status_val == "Solved":
@@ -275,7 +304,35 @@ def generate_report_bytes(batch_id: int) -> bytes:
             status_cell.fill = fill_pending
             status_cell.font = font_pending
 
-        ws3.cell(row=curr_row, column=5, value=sct_issue["comment"] or "").alignment = align_left
+        ws3.cell(row=curr_row, column=5, value=summary_comments[key] or "").alignment = align_left
+
+        for c in range(1, 6):
+            if c != 4:  # status cell is formatted separately
+                ws3.cell(row=curr_row, column=c).font = font_regular
+            ws3.cell(row=curr_row, column=c).border = border_cell
+        curr_row += 1
+
+    # 2. SCT issues
+    sct_keys = sorted([k for k in summary_counts.keys() if k[0] == "sct"])
+    for key in sct_keys:
+        side, partner, category, eff_status = key
+        count = summary_counts[key]
+        
+        ws3.cell(row=curr_row, column=1, value="SCT").alignment = align_left
+        ws3.cell(row=curr_row, column=2, value=category).alignment = align_left
+        ws3.cell(row=curr_row, column=3, value=count).alignment = align_right
+        
+        status_val = eff_status.replace("_", " ").title()
+        status_cell = ws3.cell(row=curr_row, column=4, value=status_val)
+        status_cell.alignment = align_center
+        if status_val == "Solved":
+            status_cell.fill = fill_solved
+            status_cell.font = font_solved
+        else:
+            status_cell.fill = fill_pending
+            status_cell.font = font_pending
+
+        ws3.cell(row=curr_row, column=5, value=summary_comments[key] or "").alignment = align_left
 
         for c in range(1, 6):
             if c != 4:  # status cell is formatted separately
