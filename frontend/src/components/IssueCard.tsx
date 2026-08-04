@@ -22,7 +22,7 @@ export default function IssueCard({
   onUpdate,
 }: {
   issue: Issue;
-  onUpdate: (patch: { status?: IssueStatusValue; comment?: string }) => Promise<void>;
+  onUpdate: (patch: { status?: IssueStatusValue; comment?: string; mid_overrides?: Record<string, IssueStatusValue> }) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const [comment, setComment] = useState(issue.comment ?? "");
@@ -42,6 +42,32 @@ export default function IssueCard({
     setSaving(true);
     try {
       await onUpdate({ comment });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleMidOverrideChange = async (mid: string, overrideStatus: string) => {
+    const currentOverrides = issue.mid_overrides || {};
+    const newOverrides = { ...currentOverrides };
+    
+    if (overrideStatus === "") {
+      delete newOverrides[mid];
+    } else {
+      const numAffected = issue.affected_mids.length;
+      if (numAffected > 1) {
+        const potentialCount = Object.keys(newOverrides).filter(k => k !== mid).length + 1;
+        if (potentialCount >= numAffected) {
+          alert("You cannot override all MIDs in a group. Please change the group status instead.");
+          return;
+        }
+      }
+      newOverrides[mid] = overrideStatus as IssueStatusValue;
+    }
+
+    setSaving(true);
+    try {
+      await onUpdate({ mid_overrides: newOverrides });
     } finally {
       setSaving(false);
     }
@@ -78,10 +104,34 @@ export default function IssueCard({
           >
             <div className="px-4 py-3 space-y-3">
               <div>
-                <p className="text-xs text-neutral-400 mb-1">Affected MIDs ({issue.affected_mids.length}{issue.count > issue.affected_mids.length ? "+" : ""})</p>
-                <p className="text-xs font-mono text-neutral-600 break-all leading-relaxed">
-                  {issue.affected_mids.join(", ")}
-                </p>
+                <p className="text-xs text-neutral-400 mb-2">Affected MIDs ({issue.affected_mids.length}) - Select to override status</p>
+                <div className="flex flex-wrap gap-2">
+                  {issue.affected_mids.map(mid => {
+                    const override = issue.mid_overrides?.[mid];
+                    const isOverridden = !!override;
+                    return (
+                      <div key={mid} className="inline-flex items-center bg-white border border-neutral-200 rounded text-xs">
+                        <span className={`px-2 py-1 font-mono ${isOverridden ? 'text-red-600 font-medium' : 'text-neutral-600'}`}>
+                          {mid}
+                        </span>
+                        <select
+                          value={override || ""}
+                          disabled={saving}
+                          onChange={(e) => handleMidOverrideChange(mid, e.target.value)}
+                          className="bg-transparent text-neutral-500 border-l border-neutral-200 py-1 px-1 focus:outline-none appearance-none cursor-pointer"
+                          style={{ WebkitAppearance: 'none', MozAppearance: 'none' }}
+                          title="Override Status"
+                        >
+                          <option value="">Group Status</option>
+                          <option value="pending">Pending</option>
+                          <option value="in_progress">In Progress</option>
+                          <option value="solved">Solved</option>
+                          <option value="exclude">Exclude</option>
+                        </select>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
 
               <div className="flex items-center gap-2">

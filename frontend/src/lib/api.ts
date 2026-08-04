@@ -36,6 +36,8 @@ export type Batch = {
 
 export type IssueStatusValue = "pending" | "in_progress" | "solved" | "exclude";
 
+export type MidOverride = { status: IssueStatusValue; remark?: string };
+
 export type Issue = {
   id: number | null;
   side?: "sct" | "aggregator" | "bank" | "unknown";
@@ -44,6 +46,7 @@ export type Issue = {
   affected_mids: string[];
   status: IssueStatusValue;
   comment: string | null;
+  mid_overrides?: Record<string, MidOverride>;
   last_solved_comment?: string | null;
 };
 
@@ -95,7 +98,7 @@ export const batchesApi = {
 
   getReportUrl: (id: number) => `/api/batches/${id}/report`,
 
-  updateIssue: (batchId: number, issueId: number, data: { status?: IssueStatusValue; comment?: string }) =>
+  updateIssue: (batchId: number, issueId: number, data: { status?: IssueStatusValue; comment?: string; mid_overrides?: Record<string, MidOverride> }) =>
     request<Issue>(`/batches/${batchId}/issues/${issueId}`, { method: "PATCH", body: JSON.stringify(data) }),
 
   remove: (id: number) => request<void>(`/batches/${id}`, { method: "DELETE" }),

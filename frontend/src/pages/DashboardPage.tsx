@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { FiDownload, FiCheckCircle, FiTrash2 } from "react-icons/fi";
-import { batchesApi, type BatchWithDashboard, type IssueStatusValue } from "../lib/api";
+import { batchesApi, type BatchWithDashboard, type IssueStatusValue, type MidOverride } from "../lib/api";
 import StatCard from "../components/StatCard";
 import IssueTable, { type FlatIssueRow } from "../components/IssueTable";
 
@@ -37,7 +37,7 @@ export default function DashboardPage() {
     load();
   }, [load]);
 
-  const handleUpdateIssue = async (issueId: number, patch: { status?: IssueStatusValue; comment?: string }) => {
+  const handleUpdateIssue = async (issueId: number, patch: { status?: IssueStatusValue; comment?: string; mid_overrides?: Record<string, MidOverride> }) => {
     await batchesApi.updateIssue(id, issueId, patch);
     await load();
   };
@@ -109,6 +109,7 @@ export default function DashboardPage() {
         affectedMids: issue.affected_mids,
         status: issue.status,
         comment: issue.comment,
+        mid_overrides: issue.mid_overrides || {},
       }))
     );
   }, [data]);
@@ -124,6 +125,7 @@ export default function DashboardPage() {
         affectedMids: issue.affected_mids,
         status: issue.status,
         comment: issue.comment,
+        mid_overrides: issue.mid_overrides || {},
       }))
     );
   }, [data]);
@@ -138,6 +140,7 @@ export default function DashboardPage() {
       affectedMids: issue.affected_mids,
       status: issue.status,
       comment: issue.comment,
+      mid_overrides: issue.mid_overrides || {},
     }));
   }, [data]);
 

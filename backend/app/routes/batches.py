@@ -134,6 +134,8 @@ def update_issue(batch_id, issue_id):
         issue.status = data["status"]
     if "comment" in data:
         issue.comment = data["comment"]
+    if "mid_overrides" in data:
+        issue.mid_overrides = data["mid_overrides"]
 
     db.session.commit()
     return jsonify(issue.to_dict())

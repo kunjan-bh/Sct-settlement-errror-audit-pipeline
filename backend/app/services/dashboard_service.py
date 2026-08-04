@@ -108,9 +108,10 @@ def _build_partner_summary(transactions: list[Transaction], issue_statuses: dict
                 "side": side,
                 "category": category,
                 "count": len(cat_rows),
-                "affected_mids": sorted({r.mid for r in cat_rows if r.mid})[:20],
+                "affected_mids": sorted({r.mid for r in cat_rows if r.mid}),
                 "status": status_row.status,
                 "comment": status_row.comment,
+                "mid_overrides": status_row.mid_overrides or {},
                 "last_solved_comment": _get_last_solved_comment(side, partner_name, category, batch_id),
             })
 
@@ -154,9 +155,10 @@ def _build_sct_summary(transactions: list[Transaction], issue_statuses: dict, ba
             "id": status_row.id,
             "category": category,
             "count": len(rows),
-            "affected_mids": sorted({r.mid for r in rows if r.mid})[:20],
+            "affected_mids": sorted({r.mid for r in rows if r.mid}),
             "status": status_row.status,
             "comment": status_row.comment,
+            "mid_overrides": status_row.mid_overrides or {},
             "last_solved_comment": _get_last_solved_comment("sct", None, category, batch_id),
         })
 

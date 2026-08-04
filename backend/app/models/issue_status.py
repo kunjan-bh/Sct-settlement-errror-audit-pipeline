@@ -33,6 +33,7 @@ class IssueStatus(db.Model):
 
     status = db.Column(db.String(16), nullable=False, default="pending")  # pending|in_progress|solved
     comment = db.Column(db.Text, nullable=True)
+    mid_overrides = db.Column(db.JSON, nullable=True, default={})
 
     updated_at = db.Column(
         db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
@@ -53,5 +54,6 @@ class IssueStatus(db.Model):
             "category": self.category,
             "status": self.status,
             "comment": self.comment,
+            "mid_overrides": self.mid_overrides or {},
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
