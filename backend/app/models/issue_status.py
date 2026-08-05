@@ -30,6 +30,7 @@ class IssueStatus(db.Model):
     side = db.Column(db.String(16), nullable=False)  # sct | aggregator | bank
     partner_name = db.Column(db.String(64), nullable=True)  # null for sct-side issues
     category = db.Column(db.String(128), nullable=False)
+    txn_status = db.Column(db.String(32), nullable=False, default="unknown")
 
     status = db.Column(db.String(16), nullable=False, default="pending")  # pending|in_progress|solved
     comment = db.Column(db.Text, nullable=True)
@@ -41,7 +42,7 @@ class IssueStatus(db.Model):
 
     __table_args__ = (
         db.UniqueConstraint(
-            "batch_id", "side", "partner_name", "category", name="uq_issue_identity"
+            "batch_id", "side", "partner_name", "category", "txn_status", name="uq_issue_identity"
         ),
     )
 
@@ -52,6 +53,7 @@ class IssueStatus(db.Model):
             "side": self.side,
             "partner_name": self.partner_name,
             "category": self.category,
+            "txn_status": self.txn_status,
             "status": self.status,
             "comment": self.comment,
             "mid_overrides": self.mid_overrides or {},

@@ -34,7 +34,7 @@ export type Batch = {
   notes: string | null;
 };
 
-export type IssueStatusValue = "pending" | "in_progress" | "solved" | "exclude";
+export type IssueStatusValue = "pending" | "in_progress" | "solved" | "exclude" | "lo_progress" | "success";
 
 export type MidOverride = { status: IssueStatusValue; remark?: string };
 
@@ -54,8 +54,10 @@ export type PartnerSummary = {
   partner_name: string;
   failed: number;
   pending: number;
-  issue_count: number;
-  issues: Issue[];
+  lo_progress: number;
+  issues_failed: Issue[];
+  issues_pending: Issue[];
+  issues_lo_progress: Issue[];
 };
 
 export type DashboardData = {
@@ -67,10 +69,17 @@ export type DashboardData = {
     transaction_failed: number;
     no_aggregator: number;
     total_aggregators: number;
+    lo_progress: number;
+    success_issues: number;
   };
   aggregator_summary: PartnerSummary[];
   bank_summary: PartnerSummary[];
-  sct_summary: { total_issues: number; issues: Issue[] };
+  sct_summary: {
+    total_issues: number;
+    issues_failed: Issue[];
+    issues_pending: Issue[];
+    issues_lo_progress: Issue[];
+  };
 };
 
 export type BatchWithDashboard = { batch: Batch; dashboard: DashboardData };
@@ -97,6 +106,9 @@ export const batchesApi = {
   finish: (id: number) => request<Batch>(`/batches/${id}/finish`, { method: "POST" }),
 
   getReportUrl: (id: number) => `/api/batches/${id}/report`,
+
+  getAggregatorReportUrl: (batchId: number, partnerName: string, status?: string) => 
+    `/api/batches/${batchId}/export-aggregator/${encodeURIComponent(partnerName)}${status ? `?status=${status}` : ""}`,
 
   updateIssue: (batchId: number, issueId: number, data: { status?: IssueStatusValue; comment?: string; mid_overrides?: Record<string, MidOverride> }) =>
     request<Issue>(`/batches/${batchId}/issues/${issueId}`, { method: "PATCH", body: JSON.stringify(data) }),

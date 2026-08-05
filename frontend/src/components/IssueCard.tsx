@@ -8,6 +8,8 @@ const STATUS_STYLES: Record<IssueStatusValue, string> = {
   in_progress: "bg-amber-50 text-amber-700",
   solved: "bg-green-50 text-green-700",
   exclude: "bg-gray-200 text-gray-600",
+  lo_progress: "bg-blue-50 text-blue-700",
+  success: "bg-emerald-50 text-emerald-700",
 };
 
 const STATUS_LABELS: Record<IssueStatusValue, string> = {
@@ -15,6 +17,8 @@ const STATUS_LABELS: Record<IssueStatusValue, string> = {
   in_progress: "In Progress",
   solved: "Solved",
   exclude: "Exclude",
+  lo_progress: "Lo Progress",
+  success: "Success",
 };
 
 export default function IssueCard({
@@ -127,6 +131,8 @@ export default function IssueCard({
                           <option value="in_progress">In Progress</option>
                           <option value="solved">Solved</option>
                           <option value="exclude">Exclude</option>
+                          <option value="lo_progress">Lo Progress</option>
+                          <option value="success">Success</option>
                         </select>
                       </div>
                     );
@@ -146,6 +152,8 @@ export default function IssueCard({
                   <option value="in_progress">In Progress</option>
                   <option value="solved">Solved</option>
                   <option value="exclude">Exclude</option>
+                  <option value="lo_progress">Lo Progress</option>
+                  <option value="success">Success</option>
                 </select>
               </div>
 

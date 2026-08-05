@@ -18,6 +18,8 @@ const STATUS_OPTIONS: { value: IssueStatusValue; label: string; style: string }[
   { value: "in_progress", label: "In Progress", style: "bg-amber-50 text-amber-800 border-amber-300" },
   { value: "solved", label: "Solved", style: "bg-emerald-50 text-emerald-800 border-emerald-300" },
   { value: "exclude", label: "Exclude", style: "bg-gray-200 text-gray-600 border-gray-300" },
+  { value: "lo_progress", label: "Lo Progress", style: "bg-blue-50 text-blue-800 border-blue-300" },
+  { value: "success", label: "Success", style: "bg-emerald-100 text-emerald-900 border-emerald-400" },
 ];
 
 // ─── Override MID Modal ───────────────────────────────────────────────────────
@@ -138,6 +140,8 @@ function MidOverrideModal({
               <option value="in_progress">In Progress</option>
               <option value="solved">Solved</option>
               <option value="exclude">Exclude</option>
+              <option value="lo_progress">Lo Progress</option>
+              <option value="success">Success</option>
             </select>
           </div>
 

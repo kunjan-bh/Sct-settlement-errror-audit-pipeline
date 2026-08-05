@@ -1,7 +1,7 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { FiDownload, FiCheckCircle, FiTrash2 } from "react-icons/fi";
-import { batchesApi, type BatchWithDashboard, type IssueStatusValue, type MidOverride } from "../lib/api";
+import { batchesApi, type BatchWithDashboard, type IssueStatusValue, type MidOverride, type PartnerSummary, type Issue } from "../lib/api";
 import StatCard from "../components/StatCard";
 import IssueTable, { type FlatIssueRow } from "../components/IssueTable";
 
@@ -58,7 +58,6 @@ export default function DashboardPage() {
     try {
       await batchesApi.finish(id);
       await load();
-      // Trigger report download
       window.location.href = batchesApi.getReportUrl(id);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Failed to finish batch");
@@ -68,11 +67,17 @@ export default function DashboardPage() {
   };
 
   const handleFinishBatch = async () => {
-    const unresolved = [
-      ...aggregatorRows,
-      ...bankRows,
-      ...sctRows
-    ].filter(row => row.status !== "solved").length;
+    if (!data) return;
+    const allIssues: Issue[] = [];
+    data.dashboard.aggregator_summary.forEach(p => {
+        allIssues.push(...p.issues_failed, ...p.issues_pending, ...p.issues_lo_progress);
+    });
+    data.dashboard.bank_summary.forEach(p => {
+        allIssues.push(...p.issues_failed, ...p.issues_pending, ...p.issues_lo_progress);
+    });
+    allIssues.push(...data.dashboard.sct_summary.issues_failed, ...data.dashboard.sct_summary.issues_pending, ...data.dashboard.sct_summary.issues_lo_progress);
+
+    const unresolved = allIssues.filter(issue => issue.status !== "solved").length;
 
     if (unresolved > 0) {
       setUnresolvedCount(unresolved);
@@ -98,58 +103,75 @@ export default function DashboardPage() {
     }
   };
 
-  const aggregatorRows: FlatIssueRow[] = useMemo(() => {
-    if (!data) return [];
-    return data.dashboard.aggregator_summary.flatMap((partner) =>
-      partner.issues.map((issue) => ({
-        issueId: issue.id,
-        partnerName: partner.partner_name,
-        category: issue.category,
-        count: issue.count,
-        affectedMids: issue.affected_mids,
-        status: issue.status,
-        comment: issue.comment,
-        mid_overrides: issue.mid_overrides || {},
-      }))
-    );
-  }, [data]);
-
-  const bankRows: FlatIssueRow[] = useMemo(() => {
-    if (!data) return [];
-    return data.dashboard.bank_summary.flatMap((partner) =>
-      partner.issues.map((issue) => ({
-        issueId: issue.id,
-        partnerName: partner.partner_name,
-        category: issue.category,
-        count: issue.count,
-        affectedMids: issue.affected_mids,
-        status: issue.status,
-        comment: issue.comment,
-        mid_overrides: issue.mid_overrides || {},
-      }))
-    );
-  }, [data]);
-
-  const sctRows: FlatIssueRow[] = useMemo(() => {
-    if (!data) return [];
-    return data.dashboard.sct_summary.issues.map((issue) => ({
-      issueId: issue.id,
-      partnerName: "SCT",
-      category: issue.category,
-      count: issue.count,
-      affectedMids: issue.affected_mids,
-      status: issue.status,
-      comment: issue.comment,
-      mid_overrides: issue.mid_overrides || {},
-    }));
-  }, [data]);
-
   if (loading) return <div className="max-w-6xl mx-auto px-8 py-16 text-neutral-400">Loading…</div>;
   if (error) return <div className="max-w-6xl mx-auto px-8 py-16 text-red-600">{error}</div>;
   if (!data) return null;
 
   const { batch, dashboard } = data;
   const isFinished = batch.status === "finished";
+
+  const mapToFlatRows = (issues: Issue[], partnerName: string): FlatIssueRow[] => issues.map(issue => ({
+    issueId: issue.id,
+    partnerName,
+    category: issue.category,
+    count: issue.count,
+    affectedMids: issue.affected_mids,
+    status: issue.status,
+    comment: issue.comment,
+    mid_overrides: issue.mid_overrides || {},
+    last_solved_comment: issue.last_solved_comment,
+  }));
+
+  const renderPartnerSummary = (partner: PartnerSummary) => {
+    const failedRows = mapToFlatRows(partner.issues_failed, partner.partner_name);
+    const pendingRows = mapToFlatRows(partner.issues_pending, partner.partner_name);
+    const loProgressRows = mapToFlatRows(partner.issues_lo_progress, partner.partner_name);
+
+    return (
+      <div key={partner.partner_name} className="bg-white border border-neutral-200 rounded-lg p-5 space-y-5 shadow-sm">
+        <div className="flex items-center justify-between border-b border-neutral-100 pb-3">
+          <h3 className="text-lg font-semibold text-neutral-900">{partner.partner_name}</h3>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium bg-red-100 text-red-700 px-2 py-0.5 rounded-full">{partner.failed} Failed</span>
+            <span className="text-xs font-medium bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">{partner.pending} Pending</span>
+            <span className="text-xs font-medium bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">{partner.lo_progress} Lo Progress</span>
+          </div>
+        </div>
+
+        {failedRows.length > 0 && (
+          <div className="space-y-2">
+            <h4 className="text-sm font-semibold text-neutral-800 uppercase tracking-wider">Failed Transactions</h4>
+            <IssueTable rows={failedRows} onUpdateIssue={handleUpdateIssue} emptyMessage="" />
+          </div>
+        )}
+
+        {pendingRows.length > 0 && (
+          <div className="space-y-2">
+            <h4 className="text-sm font-semibold text-neutral-800 uppercase tracking-wider">Pending Transactions</h4>
+            <IssueTable rows={pendingRows} onUpdateIssue={handleUpdateIssue} emptyMessage="" />
+          </div>
+        )}
+
+        {loProgressRows.length > 0 && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-semibold text-neutral-800 uppercase tracking-wider">Lo Progress Transactions</h4>
+              <a
+                href={batchesApi.getAggregatorReportUrl(id, partner.partner_name, "lo_progress")}
+                download
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium text-xs transition-colors cursor-pointer"
+                title={`Download only Lo Progress records for ${partner.partner_name}`}
+              >
+                <FiDownload className="text-sm" />
+                Download LO Excel
+              </a>
+            </div>
+            <IssueTable rows={loProgressRows} onUpdateIssue={handleUpdateIssue} emptyMessage="" />
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="max-w-6xl mx-auto px-8 py-10 space-y-8 font-sans">
@@ -181,7 +203,7 @@ export default function DashboardPage() {
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded bg-neutral-900 hover:bg-neutral-800 text-white font-semibold text-xs transition-colors shadow-sm disabled:opacity-50 cursor-pointer"
             >
               <FiCheckCircle className="text-emerald-400 text-sm" />
-              {finishing ? "Finishing…" : "Finish Batch & Export"}
+              {finishing ? "Finishing & Export" : "Finish Batch & Export"}
             </button>
           ) : (
             <a
@@ -190,62 +212,66 @@ export default function DashboardPage() {
               className="inline-flex items-center gap-1.5 px-4 py-2 rounded bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-xs transition-colors shadow-sm cursor-pointer"
             >
               <FiDownload className="text-sm" />
-              Download Excel
+              Download Full Report
             </a>
           )}
         </div>
       </header>
 
-      <section className="grid grid-cols-2 md:grid-cols-6 gap-4">
+      <section className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
         <StatCard label="Total Txns" value={dashboard.totals.total_transactions} />
         <StatCard label="Pending" value={dashboard.totals.pending} />
-        <StatCard label="Settlement Failed" value={dashboard.totals.settlement_failed} />
+        <StatCard label="Failed" value={dashboard.totals.failed} />
+        <StatCard label="Lo Progress" value={dashboard.totals.lo_progress} />
         <StatCard label="SCT Failed" value={dashboard.totals.transaction_failed} />
+        <StatCard label="Success" value={dashboard.totals.success_issues} />
         <StatCard label="No Aggregator" value={dashboard.totals.no_aggregator} />
         <StatCard label="Aggregators" value={dashboard.totals.total_aggregators} />
       </section>
 
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
+      {dashboard.aggregator_summary.length > 0 && (
+        <section className="space-y-4">
           <h2 className="text-base font-semibold text-neutral-950 uppercase tracking-wider text-xs">Aggregator Summary</h2>
-          <span className="text-xs font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full">
-            {aggregatorRows.length} {aggregatorRows.length === 1 ? "issue" : "issues"}
-          </span>
-        </div>
-        <IssueTable
-          rows={aggregatorRows}
-          onUpdateIssue={handleUpdateIssue}
-          emptyMessage="No transactions resolved to an aggregator yet — import your coop member codes on the Partner Mapping page."
-        />
-      </section>
+          <div className="space-y-6">
+            {dashboard.aggregator_summary.map(renderPartnerSummary)}
+          </div>
+        </section>
+      )}
 
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
+      {dashboard.bank_summary.length > 0 && (
+        <section className="space-y-4">
           <h2 className="text-base font-semibold text-neutral-950 uppercase tracking-wider text-xs">Bank / Wallet Summary</h2>
-          <span className="text-xs font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full">
-            {bankRows.length} {bankRows.length === 1 ? "issue" : "issues"}
-          </span>
-        </div>
-        <IssueTable
-          rows={bankRows}
-          onUpdateIssue={handleUpdateIssue}
-          emptyMessage="No bank/wallet issues reported."
-        />
-      </section>
+          <div className="space-y-6">
+            {dashboard.bank_summary.map(renderPartnerSummary)}
+          </div>
+        </section>
+      )}
 
-      <section className="space-y-3">
-        <div className="flex items-center justify-between">
+      {dashboard.sct_summary.total_issues > 0 && (
+        <section className="space-y-4">
           <h2 className="text-base font-semibold text-neutral-950 uppercase tracking-wider text-xs">SCT Summary</h2>
-          <span className="text-xs font-medium text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full">
-            {sctRows.length} {sctRows.length === 1 ? "issue" : "issues"}
-          </span>
-        </div>
-        <IssueTable
-          rows={sctRows}
-          onUpdateIssue={handleUpdateIssue}
-          emptyMessage="No SCT issues reported."
-        />
-      </section>
+          <div className="bg-white border border-neutral-200 rounded-lg p-5 shadow-sm space-y-5">
+            {dashboard.sct_summary.issues_failed.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-sm font-semibold text-neutral-800 uppercase tracking-wider">Failed</h4>
+                <IssueTable rows={mapToFlatRows(dashboard.sct_summary.issues_failed, "SCT")} onUpdateIssue={handleUpdateIssue} emptyMessage="" />
+              </div>
+            )}
+            {dashboard.sct_summary.issues_pending.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-sm font-semibold text-neutral-800 uppercase tracking-wider">Pending</h4>
+                <IssueTable rows={mapToFlatRows(dashboard.sct_summary.issues_pending, "SCT")} onUpdateIssue={handleUpdateIssue} emptyMessage="" />
+              </div>
+            )}
+            {dashboard.sct_summary.issues_lo_progress.length > 0 && (
+              <div className="space-y-2">
+                <h4 className="text-sm font-semibold text-neutral-800 uppercase tracking-wider">Lo Progress</h4>
+                <IssueTable rows={mapToFlatRows(dashboard.sct_summary.issues_lo_progress, "SCT")} onUpdateIssue={handleUpdateIssue} emptyMessage="" />
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 
       <section className="space-y-2 border-t border-neutral-200 pt-6">
         <h2 className="text-base font-semibold text-neutral-950 uppercase tracking-wider text-xs">Batch Notes</h2>

@@ -119,11 +119,14 @@ def ingest_excel(file_path: str, batch_date: date | None = None) -> Batch:
 
         extra_data = {col: _json_safe(row.get(col)) for col in extra_cols}
 
+        status_val = _clean(row.get("Status"))
+        txn_status = (status_val.lower().replace(" ", "_") if status_val else "unknown")
+
         txn = Transaction(
             batch_id=batch.id,
             mid=mid,
             merchant_name=_clean(row.get("Merchant Name")),
-            status=_clean(row.get("Status")),
+            status=status_val,
             status_code=_clean(row.get("Status Code")),
             remark=remark,
             extra_data=extra_data,
@@ -139,15 +142,17 @@ def ingest_excel(file_path: str, batch_date: date | None = None) -> Batch:
         # RuleEngine are different dimensions (see classification_rule.py
         # docstring) -- IssueStatus groups by error_side, since that's
         # "whose fault", which is what ops actually resolves.
-        issue_key = (batch.id, result.side, partner_name if result.side != "sct" else None, result.category)
-        if issue_key not in issue_cache:
-            issue_cache[issue_key] = IssueStatus(
-                batch_id=batch.id,
-                side=result.side,
-                partner_name=issue_key[2],
-                category=result.category,
-                status="pending",
-            )
+        if txn_status != "success":
+            issue_key = (batch.id, result.side, partner_name if result.side != "sct" else None, result.category, txn_status)
+            if issue_key not in issue_cache:
+                issue_cache[issue_key] = IssueStatus(
+                    batch_id=batch.id,
+                    side=result.side,
+                    partner_name=issue_key[2],
+                    category=result.category,
+                    txn_status=txn_status,
+                    status="pending",
+                )
 
     db.session.bulk_save_objects(transactions)
     for issue in issue_cache.values():

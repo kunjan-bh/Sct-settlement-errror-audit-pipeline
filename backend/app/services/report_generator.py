@@ -27,9 +27,9 @@ def generate_report_bytes(batch_id: int) -> bytes:
     dashboard = build_dashboard(batch_id)
 
     # Fast lookup for IssueStatus status & comment:
-    # issue_key = (side, partner_name, category)
+    # issue_key = (side, partner_name, category, txn_status)
     issue_status_map = {
-        (i.side, i.partner_name, i.category): i
+        (i.side, i.partner_name, i.category, i.txn_status): i
         for i in issues
     }
 
@@ -185,7 +185,8 @@ def generate_report_bytes(batch_id: int) -> bytes:
                 row_vals.append(extra.get(h, ""))
 
         # Appended columns lookup
-        issue_obj = issue_status_map.get((txn.error_side, txn.partner_name if txn.error_side != "sct" else None, txn.error_category))
+        txn_original_status = (txn.status.lower().replace(" ", "_") if txn.status else "unknown")
+        issue_obj = issue_status_map.get((txn.error_side, txn.partner_name if txn.error_side != "sct" else None, txn.error_category, txn_original_status))
         
         override_obj = None
         if issue_obj and issue_obj.mid_overrides and txn.mid in issue_obj.mid_overrides:
@@ -264,8 +265,9 @@ def generate_report_bytes(batch_id: int) -> bytes:
         side = txn.error_side
         partner = txn.partner_name if side != "sct" else "SCT"
         category = txn.error_category or "Unclassified"
+        txn_original_status = (txn.status.lower().replace(" ", "_") if txn.status else "unknown")
         
-        issue_obj = issue_status_map.get((side, txn.partner_name if side != "sct" else None, category))
+        issue_obj = issue_status_map.get((side, txn.partner_name if side != "sct" else None, category, txn_original_status))
         
         override_obj = None
         if issue_obj and issue_obj.mid_overrides and txn.mid in issue_obj.mid_overrides:
@@ -340,8 +342,48 @@ def generate_report_bytes(batch_id: int) -> bytes:
             ws3.cell(row=curr_row, column=c).border = border_cell
         curr_row += 1
 
+    # ==========================================
+    # SHEET 4: Lo Status
+    # ==========================================
+    ws4 = wb.create_sheet(title="Lo Status")
+    ws4.views.sheetView[0].showGridLines = True
+
+    ws4["A1"] = "Lo Status Tracking"
+    ws4["A1"].font = font_title
+
+    headers_lo = ["Aggregator / Wallet", "Issue Category", "Affected Txns", "Solved Status", "Ops Remarks"]
+    for col_idx, h in enumerate(headers_lo, start=1):
+        cell = ws4.cell(row=3, column=col_idx, value=h)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = align_center
+
+    curr_row_lo = 4
+    for key in sorted([k for k in summary_counts.keys() if k[0] != "sct"]):
+        side, partner, category, eff_status = key
+        if eff_status == "lo_progress":
+            count = summary_counts[key]
+            
+            ws4.cell(row=curr_row_lo, column=1, value=partner).alignment = align_left
+            ws4.cell(row=curr_row_lo, column=2, value=category).alignment = align_left
+            ws4.cell(row=curr_row_lo, column=3, value=count).alignment = align_right
+            
+            status_val = "Lo Progress"
+            status_cell = ws4.cell(row=curr_row_lo, column=4, value=status_val)
+            status_cell.alignment = align_center
+            status_cell.fill = fill_pending
+            status_cell.font = font_pending
+
+            ws4.cell(row=curr_row_lo, column=5, value=summary_comments[key] or "").alignment = align_left
+
+            for c in range(1, 6):
+                if c != 4:
+                    ws4.cell(row=curr_row_lo, column=c).font = font_regular
+                ws4.cell(row=curr_row_lo, column=c).border = border_cell
+            curr_row_lo += 1
+
     # Auto-adjust column widths across all sheets
-    for ws in [ws1, ws2, ws3]:
+    for ws in [ws1, ws2, ws3, ws4]:
         for col in ws.columns:
             max_len = 0
             col_letter = get_column_letter(col[0].column)
@@ -354,6 +396,121 @@ def generate_report_bytes(batch_id: int) -> bytes:
     # Remove default sheet if present
     if "Sheet" in wb.sheetnames:
         wb.remove(wb["Sheet"])
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
+
+
+def generate_aggregator_report_bytes(batch_id: int, partner_name: str, status_filter: str = None) -> bytes:
+    """
+    Generates a targeted extract for a specific aggregator containing ONLY
+    transactions whose resolved issue status is pending, failed, or lo_progress.
+    Optionally filters by the original transaction status.
+    """
+    batch = Batch.query.get_or_404(batch_id)
+    transactions = Transaction.query.filter_by(batch_id=batch_id, partner_name=partner_name).all()
+    issues = IssueStatus.query.filter_by(batch_id=batch_id).all()
+    
+    issue_status_map = {
+        (i.side, i.partner_name, i.category, i.txn_status): i
+        for i in issues
+    }
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Aggregator Extract"
+    
+    font_header = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    font_regular = Font(name="Calibri", size=10)
+    fill_header = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
+    thin_border_side = Side(border_style="thin", color="D9D9D9")
+    border_cell = Border(left=thin_border_side, right=thin_border_side, top=thin_border_side, bottom=thin_border_side)
+    align_center = Alignment(horizontal="center", vertical="center")
+    align_left = Alignment(horizontal="left", vertical="center")
+
+    orig_headers = []
+    if batch.input_file_path and os.path.exists(batch.input_file_path):
+        try:
+            h_idx = _find_header_index(batch.input_file_path)
+            raw_df = pd.read_excel(batch.input_file_path, header=h_idx, nrows=1)
+            orig_headers = [str(c).strip() for c in raw_df.columns if pd.notna(c)]
+        except Exception:
+            pass
+
+    if not orig_headers:
+        orig_headers = ["SN", "Transaction Date", "Acquirer Name", "MID", "Merchant Name", "Txn Amount", "Service Charge", "Settled By", "STAN", "CRRN", "CR Transaction ID", "Bank/Wallet Name", "Bank Account/Wallet ID", "Account Name", "Remarks 1", "Remarks 2", "Status Code", "Status"]
+
+    appended_headers = ["Issue Category", "Solved Status", "Ops Remarks"]
+    full_headers = orig_headers + appended_headers
+
+    for col_idx, h in enumerate(full_headers, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=h)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = align_center
+
+    row_idx = 2
+    for txn in transactions:
+        txn_original_status = (txn.status.lower().replace(" ", "_") if txn.status else "unknown")
+        if status_filter and txn_original_status != status_filter:
+            continue
+
+        extra = txn.extra_data or {}
+        issue_obj = issue_status_map.get((txn.error_side, txn.partner_name if txn.error_side != "sct" else None, txn.error_category, txn_original_status))
+        
+        override_obj = None
+        if issue_obj and issue_obj.mid_overrides and txn.mid in issue_obj.mid_overrides:
+            raw = issue_obj.mid_overrides[txn.mid]
+            if isinstance(raw, dict):
+                override_obj = raw
+            else:
+                override_obj = {"status": raw, "remark": ""}
+
+        eff_status = (override_obj["status"] if override_obj else None) or (issue_obj.status if issue_obj else "pending")
+        
+        # Only include un-solved, non-excluded transactions
+        if eff_status in ("solved", "exclude", "success"):
+            continue
+
+        solved_status = eff_status.replace("_", " ").title()
+        if override_obj and override_obj.get("remark"):
+            solved_remarks = f"[MID Override] {override_obj['remark']}"
+        else:
+            solved_remarks = issue_obj.comment if issue_obj else ""
+
+        row_vals = []
+        for h in orig_headers:
+            if h == "MID": row_vals.append(txn.mid)
+            elif h == "Merchant Name": row_vals.append(txn.merchant_name)
+            elif h == "Remarks 1": row_vals.append(txn.remark)
+            elif h == "Status Code": row_vals.append(txn.status_code)
+            elif h == "Status": row_vals.append(txn.status)
+            else: row_vals.append(extra.get(h, ""))
+            
+        row_vals.extend([
+            txn.error_category or "Unclassified",
+            solved_status,
+            solved_remarks
+        ])
+
+        for col_idx, val in enumerate(row_vals, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.font = font_regular
+            cell.border = border_cell
+            cell.alignment = align_left
+
+        row_idx += 1
+
+    for col in ws.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            val_str = str(cell.value or "")
+            if val_str:
+                max_len = max(max_len, len(val_str))
+        ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 50)
 
     output = BytesIO()
     wb.save(output)

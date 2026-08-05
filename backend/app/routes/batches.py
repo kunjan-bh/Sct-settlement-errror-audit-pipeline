@@ -15,7 +15,7 @@ from app.models.batch import Batch
 from app.models.issue_status import IssueStatus
 from app.services.excel_ingest import ingest_excel
 from app.services.dashboard_service import build_dashboard
-from app.services.report_generator import generate_report_bytes
+from app.services.report_generator import generate_report_bytes, generate_aggregator_report_bytes
 
 batches_bp = Blueprint("batches", __name__, url_prefix="/api/batches")
 
@@ -129,8 +129,8 @@ def update_issue(batch_id, issue_id):
     data = request.get_json(force=True)
 
     if "status" in data:
-        if data["status"] not in ("pending", "in_progress", "solved", "exclude"):
-            return jsonify({"error": "status must be pending, in_progress, solved, or exclude"}), 400
+        if data["status"] not in ("pending", "in_progress", "solved", "exclude", "lo_progress", "success"):
+            return jsonify({"error": "status must be pending, in_progress, solved, exclude, lo_progress, or success"}), 400
         issue.status = data["status"]
     if "comment" in data:
         issue.comment = data["comment"]
@@ -156,3 +156,23 @@ def delete_batch(batch_id):
     db.session.commit()
 
     return "", 204
+
+@batches_bp.get("/<int:batch_id>/export-aggregator/<path:partner_name>")
+def export_aggregator(batch_id, partner_name):
+    """
+    Generates an Excel extract for a specific aggregator, optionally filtered by status.
+    """
+    batch = Batch.query.get_or_404(batch_id)
+    status_filter = request.args.get("status")
+    report_bytes = generate_aggregator_report_bytes(batch.id, partner_name, status_filter)
+
+    safe_partner = partner_name.replace("/", "_").replace(" ", "_")
+    status_suffix = f"_{status_filter}" if status_filter else ""
+    filename = f"Aggregator_Extract_{safe_partner}{status_suffix}_{batch.name}.xlsx"
+    return send_file(
+        io.BytesIO(report_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=filename,
+    )
+
