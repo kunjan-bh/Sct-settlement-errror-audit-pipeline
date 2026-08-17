@@ -11,6 +11,12 @@ from app.models.transaction import Transaction
 from app.models.issue_status import IssueStatus
 from app.services.dashboard_service import build_dashboard
 from app.services.excel_ingest import _find_header_index
+from app.services.status_utils import normalize_txn_status
+from app.services.error_classification import (
+    ENTITY_TYPE_LABELS,
+    SIDE_LABELS,
+    build_error_classification,
+)
 
 
 def generate_report_bytes(batch_id: int) -> bytes:
@@ -82,35 +88,50 @@ def generate_report_bytes(batch_id: int) -> bytes:
     ws1["B6"] = dashboard["totals"]["total_transactions"]
     ws1["A7"] = "Pending Transactions:"
     ws1["B7"] = dashboard["totals"]["pending"]
-    ws1["A8"] = "Settlement Failed:"
-    ws1["B8"] = dashboard["totals"]["settlement_failed"]
-    ws1["A9"] = "Transaction Failed (SCT):"
-    ws1["B9"] = dashboard["totals"]["transaction_failed"]
-    ws1["A10"] = "Batch Notes:"
-    ws1["B10"] = batch.notes or ""
+    ws1["A8"] = "Lo Progress Transactions:"
+    ws1["B8"] = dashboard["totals"]["lo_progress"]
+    ws1["A9"] = "Settlement Failed:"
+    ws1["B9"] = dashboard["totals"]["settlement_failed"]
+    ws1["A10"] = "Transaction Failed (SCT):"
+    ws1["B10"] = dashboard["totals"]["transaction_failed"]
+    ws1["A11"] = "Reprocessed & Settled (excluded):"
+    ws1["B11"] = dashboard["totals"].get("retry_resolved", 0)
+    ws1["A12"] = "Batch Notes:"
+    ws1["B12"] = batch.notes or ""
 
-    for row_idx in range(3, 11):
+    for row_idx in range(3, 13):
         ws1[f"A{row_idx}"].font = font_bold
         ws1[f"B{row_idx}"].font = font_regular
 
-    # Table 1: Aggregator Summary
-    ws1["A13"] = "Aggregator Summary"
-    ws1["A13"].font = font_section
+    # Table 1: Partner Summary (aggregators first, then banks/wallets).
+    # Counts come from the dashboard's three per-status issue lists -- there
+    # is no precomputed "issue_count", the unique-issue total is their length.
+    ws1["A15"] = "Partner Summary"
+    ws1["A15"].font = font_section
 
-    headers_agg = ["Aggregator", "Failed Count", "Pending Count", "Unique Issues"]
+    headers_agg = ["Partner", "Type", "Failed", "Pending", "Lo Progress", "Unique Issues"]
     for col_idx, h in enumerate(headers_agg, start=1):
-        cell = ws1.cell(row=14, column=col_idx, value=h)
+        cell = ws1.cell(row=16, column=col_idx, value=h)
         cell.font = font_header
         cell.fill = fill_header
         cell.alignment = align_center
 
-    curr_row = 15
-    for agg in dashboard["aggregator_summary"]:
+    curr_row = 17
+    partner_rows = (
+        [("Aggregator", p) for p in dashboard["aggregator_summary"]]
+        + [("Bank / Wallet", p) for p in dashboard["bank_summary"]]
+    )
+    for type_label, agg in partner_rows:
+        unique_issues = (
+            len(agg["issues_failed"]) + len(agg["issues_pending"]) + len(agg["issues_lo_progress"])
+        )
         ws1.cell(row=curr_row, column=1, value=agg["partner_name"]).alignment = align_left
-        ws1.cell(row=curr_row, column=2, value=agg["failed"]).alignment = align_right
-        ws1.cell(row=curr_row, column=3, value=agg["pending"]).alignment = align_right
-        ws1.cell(row=curr_row, column=4, value=agg["issue_count"]).alignment = align_right
-        for col_idx in range(1, 5):
+        ws1.cell(row=curr_row, column=2, value=type_label).alignment = align_left
+        ws1.cell(row=curr_row, column=3, value=agg["failed"]).alignment = align_right
+        ws1.cell(row=curr_row, column=4, value=agg["pending"]).alignment = align_right
+        ws1.cell(row=curr_row, column=5, value=agg["lo_progress"]).alignment = align_right
+        ws1.cell(row=curr_row, column=6, value=unique_issues).alignment = align_right
+        for col_idx in range(1, 7):
             ws1.cell(row=curr_row, column=col_idx).font = font_regular
             ws1.cell(row=curr_row, column=col_idx).border = border_cell
         curr_row += 1
@@ -120,7 +141,7 @@ def generate_report_bytes(batch_id: int) -> bytes:
     ws1.cell(row=curr_row, column=1, value="SCT Summary").font = font_section
     curr_row += 1
 
-    headers_sct = ["SCT Issue Category", "Failed Count"]
+    headers_sct = ["SCT Issue Category", "Txn Status", "Count"]
     for col_idx, h in enumerate(headers_sct, start=1):
         cell = ws1.cell(row=curr_row, column=col_idx, value=h)
         cell.font = font_header
@@ -128,13 +149,18 @@ def generate_report_bytes(batch_id: int) -> bytes:
         cell.alignment = align_center
     curr_row += 1
 
-    for sct_issue in dashboard["sct_summary"]["issues"]:
+    sct = dashboard["sct_summary"]
+    sct_issues = sct["issues_failed"] + sct["issues_pending"] + sct["issues_lo_progress"]
+    for sct_issue in sct_issues:
         ws1.cell(row=curr_row, column=1, value=sct_issue["category"]).alignment = align_left
-        ws1.cell(row=curr_row, column=2, value=sct_issue["count"]).alignment = align_right
-        ws1.cell(row=curr_row, column=1).font = font_regular
-        ws1.cell(row=curr_row, column=2).font = font_regular
-        ws1.cell(row=curr_row, column=1).border = border_cell
-        ws1.cell(row=curr_row, column=2).border = border_cell
+        ws1.cell(
+            row=curr_row, column=2,
+            value=sct_issue["txn_status"].replace("_", " ").title(),
+        ).alignment = align_center
+        ws1.cell(row=curr_row, column=3, value=sct_issue["count"]).alignment = align_right
+        for col_idx in range(1, 4):
+            ws1.cell(row=curr_row, column=col_idx).font = font_regular
+            ws1.cell(row=curr_row, column=col_idx).border = border_cell
         curr_row += 1
 
     # ==========================================
@@ -156,7 +182,12 @@ def generate_report_bytes(batch_id: int) -> bytes:
     if not orig_headers:
         orig_headers = ["SN", "Transaction Date", "Acquirer Name", "MID", "Merchant Name", "Txn Amount", "Service Charge", "Settled By", "STAN", "CRRN", "CR Transaction ID", "Bank/Wallet Name", "Bank Account/Wallet ID", "Account Name", "Remarks 1", "Remarks 2", "Status Code", "Status"]
 
-    appended_headers = ["Aggregator", "Issue Category", "Solved Status", "Solved Remarks", "Batch", "Timestamp"]
+    # "Retry Settled" goes last so the existing column offsets (used for the
+    # Solved Status formatting below) stay put.
+    appended_headers = [
+        "Aggregator", "Issue Category", "Solved Status", "Solved Remarks",
+        "Batch", "Timestamp", "Retry Settled",
+    ]
     full_headers = orig_headers + appended_headers
 
     for col_idx, h in enumerate(full_headers, start=1):
@@ -185,7 +216,7 @@ def generate_report_bytes(batch_id: int) -> bytes:
                 row_vals.append(extra.get(h, ""))
 
         # Appended columns lookup
-        txn_original_status = (txn.status.lower().replace(" ", "_") if txn.status else "unknown")
+        txn_original_status = normalize_txn_status(txn.status)
         issue_obj = issue_status_map.get((txn.error_side, txn.partner_name if txn.error_side != "sct" else None, txn.error_category, txn_original_status))
         
         override_obj = None
@@ -217,6 +248,9 @@ def generate_report_bytes(batch_id: int) -> bytes:
             solved_remarks,
             batch.name,
             batch.created_at.strftime("%Y-%m-%d %H:%M:%S") if batch.created_at else "",
+            # The original row is preserved either way -- this column is how a
+            # reader tells "still failed" from "failed, then reprocessed OK".
+            "Yes" if txn.retry_resolved else "",
         ])
 
         for col_idx, val in enumerate(row_vals, start=1):
@@ -260,13 +294,22 @@ def generate_report_bytes(batch_id: int) -> bytes:
     from collections import defaultdict
     summary_counts = defaultdict(int)
     summary_comments = {}
-    
+    # Sheet 4 accumulator: a row belongs on Lo Status if the transaction
+    # itself came in as "In progress", OR if ops manually moved the issue to
+    # Lo Progress. Keying it off ops status alone (as this used to) left the
+    # sheet empty for every batch nobody had hand-flagged.
+    lo_counts = defaultdict(int)
+    lo_comments = {}
+
     for txn in transactions:
+        if txn.retry_resolved:
+            continue  # settled by a later reprocess; not an outstanding issue
+
         side = txn.error_side
         partner = txn.partner_name if side != "sct" else "SCT"
         category = txn.error_category or "Unclassified"
-        txn_original_status = (txn.status.lower().replace(" ", "_") if txn.status else "unknown")
-        
+        txn_original_status = normalize_txn_status(txn.status)
+
         issue_obj = issue_status_map.get((side, txn.partner_name if side != "sct" else None, category, txn_original_status))
         
         override_obj = None
@@ -285,6 +328,12 @@ def generate_report_bytes(batch_id: int) -> bytes:
         summary_counts[key] += 1
         if key not in summary_comments:
              summary_comments[key] = issue_obj.comment if issue_obj else ""
+
+        if side != "sct" and (txn_original_status == "lo_progress" or eff_status == "lo_progress"):
+            lo_key = (partner, category, txn_original_status, eff_status)
+            lo_counts[lo_key] += 1
+            if lo_key not in lo_comments:
+                lo_comments[lo_key] = issue_obj.comment if issue_obj else ""
 
     # 1. Aggregator & Bank issues
     agg_keys = sorted([k for k in summary_counts.keys() if k[0] != "sct"])
@@ -351,7 +400,10 @@ def generate_report_bytes(batch_id: int) -> bytes:
     ws4["A1"] = "Lo Status Tracking"
     ws4["A1"].font = font_title
 
-    headers_lo = ["Aggregator / Wallet", "Issue Category", "Affected Txns", "Solved Status", "Ops Remarks"]
+    headers_lo = [
+        "Aggregator / Wallet", "Issue Category", "Txn Status",
+        "Affected Txns", "Solved Status", "Ops Remarks",
+    ]
     for col_idx, h in enumerate(headers_lo, start=1):
         cell = ws4.cell(row=3, column=col_idx, value=h)
         cell.font = font_header
@@ -359,28 +411,41 @@ def generate_report_bytes(batch_id: int) -> bytes:
         cell.alignment = align_center
 
     curr_row_lo = 4
-    for key in sorted([k for k in summary_counts.keys() if k[0] != "sct"]):
-        side, partner, category, eff_status = key
-        if eff_status == "lo_progress":
-            count = summary_counts[key]
-            
-            ws4.cell(row=curr_row_lo, column=1, value=partner).alignment = align_left
-            ws4.cell(row=curr_row_lo, column=2, value=category).alignment = align_left
-            ws4.cell(row=curr_row_lo, column=3, value=count).alignment = align_right
-            
-            status_val = "Lo Progress"
-            status_cell = ws4.cell(row=curr_row_lo, column=4, value=status_val)
-            status_cell.alignment = align_center
+    for key in sorted(lo_counts.keys(), key=lambda k: (-lo_counts[k], k[0], k[1])):
+        partner, category, txn_status, eff_status = key
+
+        ws4.cell(row=curr_row_lo, column=1, value=partner).alignment = align_left
+        ws4.cell(row=curr_row_lo, column=2, value=category).alignment = align_left
+        ws4.cell(
+            row=curr_row_lo, column=3, value=txn_status.replace("_", " ").title(),
+        ).alignment = align_center
+        ws4.cell(row=curr_row_lo, column=4, value=lo_counts[key]).alignment = align_right
+
+        status_val = eff_status.replace("_", " ").title()
+        status_cell = ws4.cell(row=curr_row_lo, column=5, value=status_val)
+        status_cell.alignment = align_center
+        if status_val == "Solved":
+            status_cell.fill = fill_solved
+            status_cell.font = font_solved
+        else:
             status_cell.fill = fill_pending
             status_cell.font = font_pending
 
-            ws4.cell(row=curr_row_lo, column=5, value=summary_comments[key] or "").alignment = align_left
+        ws4.cell(row=curr_row_lo, column=6, value=lo_comments[key] or "").alignment = align_left
 
-            for c in range(1, 6):
-                if c != 4:
-                    ws4.cell(row=curr_row_lo, column=c).font = font_regular
-                ws4.cell(row=curr_row_lo, column=c).border = border_cell
-            curr_row_lo += 1
+        for c in range(1, 7):
+            if c != 5:
+                ws4.cell(row=curr_row_lo, column=c).font = font_regular
+            ws4.cell(row=curr_row_lo, column=c).border = border_cell
+        curr_row_lo += 1
+
+    # ==========================================
+    # SHEET 5: Error Classify (last sheet)
+    # Same table the dashboard's Error Classification tab charts and the
+    # standalone extract downloads -- one builder, so they can't drift.
+    # ==========================================
+    ws5 = wb.create_sheet(title="Error Classify")
+    write_error_classify_sheet(ws5, build_error_classification(batch_id))
 
     # Auto-adjust column widths across all sheets
     for ws in [ws1, ws2, ws3, ws4]:
@@ -396,6 +461,140 @@ def generate_report_bytes(batch_id: int) -> bytes:
     # Remove default sheet if present
     if "Sheet" in wb.sheetnames:
         wb.remove(wb["Sheet"])
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
+
+
+ERROR_CLASSIFY_HEADERS = [
+    "Entity", "Entity Type", "Error Side", "Issue Category",
+    "Failed", "Pending", "Lo Progress", "Total Txns",
+    "% of Entity", "% of Batch",
+]
+
+
+def write_error_classify_sheet(ws, data: dict) -> None:
+    """
+    Writes the error-frequency table onto `ws`: one row per
+    (entity, issue category), worst entity first, no charts -- the numbers
+    only. Shared by the standalone extract and the report's last sheet.
+    """
+    batch = data["batch"]
+    totals = data["totals"]
+
+    font_title = Font(name="Calibri", size=14, bold=True, color="1F4E79")
+    font_header = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    font_bold = Font(name="Calibri", size=10, bold=True)
+    font_regular = Font(name="Calibri", size=10)
+    fill_header = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
+    fill_entity_total = PatternFill(start_color="EDF2FA", end_color="EDF2FA", fill_type="solid")
+    thin = Side(border_style="thin", color="D9D9D9")
+    border_cell = Border(left=thin, right=thin, top=thin, bottom=thin)
+    align_center = Alignment(horizontal="center", vertical="center")
+    align_left = Alignment(horizontal="left", vertical="center")
+    align_right = Alignment(horizontal="right", vertical="center")
+
+    ws["A1"] = "Error Classification — Failure Frequency by Aggregator / SCT"
+    ws["A1"].font = font_title
+
+    ws["A2"] = (
+        "Every non-success transaction in this batch, grouped by who it belongs to "
+        "and what went wrong. Counts are independent of ops status (excluded and "
+        "solved issues still count — they still happened). Failures that a later "
+        "reprocess actually settled are excluded and counted separately below."
+    )
+    ws["A2"].font = Font(name="Calibri", size=9, italic=True, color="808080")
+
+    meta = [
+        ("Batch:", batch["name"]),
+        ("Total Error Txns:", totals["total_errors"]),
+        ("Entities Affected:", totals["entities"]),
+        ("Distinct Categories:", totals["categories"]),
+        ("Failed / Pending / Lo Progress:", "{failed} / {pending} / {lo_progress}".format(
+            **totals["by_status"]
+        )),
+        ("Excluded (reprocessed & settled):", totals.get("retry_resolved", 0)),
+    ]
+    row = 4
+    for label, value in meta:
+        ws.cell(row=row, column=1, value=label).font = font_bold
+        ws.cell(row=row, column=2, value=value).font = font_regular
+        row += 1
+
+    row += 1
+    for col_idx, header in enumerate(ERROR_CLASSIFY_HEADERS, start=1):
+        cell = ws.cell(row=row, column=col_idx, value=header)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = align_center
+    header_row = row
+    row += 1
+
+    for entity in data["entities"]:
+        for cat in entity["categories"]:
+            values = [
+                entity["entity"],
+                ENTITY_TYPE_LABELS.get(entity["entity_type"], entity["entity_type"]),
+                SIDE_LABELS.get(cat["side"], cat["side"]),
+                cat["category"],
+                cat["failed"],
+                cat["pending"],
+                cat["lo_progress"],
+                cat["count"],
+                cat["share_of_entity"] / 100.0,
+                cat["share_of_batch"] / 100.0,
+            ]
+            for col_idx, value in enumerate(values, start=1):
+                cell = ws.cell(row=row, column=col_idx, value=value)
+                cell.font = font_regular
+                cell.border = border_cell
+                if col_idx <= 4:
+                    cell.alignment = align_left
+                elif col_idx <= 8:
+                    cell.alignment = align_right
+                else:
+                    cell.alignment = align_right
+                    cell.number_format = "0.0%"
+            row += 1
+
+        # Subtotal line so a reader can scan entity-level frequency without
+        # re-adding the category rows themselves.
+        subtotal = [
+            entity["entity"], "", "", "TOTAL",
+            entity["failed"], entity["pending"], entity["lo_progress"],
+            entity["total"], 1.0, entity["share_of_batch"] / 100.0,
+        ]
+        for col_idx, value in enumerate(subtotal, start=1):
+            cell = ws.cell(row=row, column=col_idx, value=value)
+            cell.font = font_bold
+            cell.fill = fill_entity_total
+            cell.border = border_cell
+            cell.alignment = align_left if col_idx <= 4 else align_right
+            if col_idx >= 9:
+                cell.number_format = "0.0%"
+        row += 1
+
+    # Entity name is repeated on every row rather than merged down the
+    # column: this sheet is meant to be filtered and pivoted, and merged
+    # cells break both.
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+    ws.auto_filter.ref = f"A{header_row}:J{max(row - 1, header_row)}"
+
+    widths = [30, 14, 12, 46, 9, 10, 12, 11, 11, 11]
+    for col_idx, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+
+def generate_error_classification_bytes(batch_id: int) -> bytes:
+    """Standalone one-sheet Excel of the error classification table."""
+    data = build_error_classification(batch_id)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Error Classify"
+    write_error_classify_sheet(ws, data)
 
     output = BytesIO()
     wb.save(output)
@@ -453,7 +652,10 @@ def generate_aggregator_report_bytes(batch_id: int, partner_name: str, status_fi
 
     row_idx = 2
     for txn in transactions:
-        txn_original_status = (txn.status.lower().replace(" ", "_") if txn.status else "unknown")
+        if txn.retry_resolved:
+            continue  # already settled on a retry -- nothing to chase up
+
+        txn_original_status = normalize_txn_status(txn.status)
         if status_filter and txn_original_status != status_filter:
             continue
 

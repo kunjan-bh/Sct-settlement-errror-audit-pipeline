@@ -71,6 +71,8 @@ export type DashboardData = {
     total_aggregators: number;
     lo_progress: number;
     success_issues: number;
+    /** Failures a later reprocess already settled — excluded from every count above. */
+    retry_resolved: number;
   };
   aggregator_summary: PartnerSummary[];
   bank_summary: PartnerSummary[];
@@ -83,6 +85,75 @@ export type DashboardData = {
 };
 
 export type BatchWithDashboard = { batch: Batch; dashboard: DashboardData };
+
+// ── Error Classification ─────────────────────────────────────────────────────
+// A different question from the Solve view: not "what is left to fix" but
+// "what broke, on whose side, how often". Counts every non-success txn
+// regardless of ops status, so it is not filtered by solved/excluded.
+
+export type ErrorSide = "sct" | "aggregator" | "bank" | "unknown";
+export type EntityType = "aggregator" | "bank_wallet" | "sct" | "unmapped";
+
+export type ErrorCategoryRow = {
+  category: string;
+  side: ErrorSide;
+  count: number;
+  failed: number;
+  pending: number;
+  lo_progress: number;
+  share_of_entity: number;
+  share_of_batch: number;
+};
+
+export type ErrorEntity = {
+  entity: string;
+  entity_type: EntityType;
+  total: number;
+  failed: number;
+  pending: number;
+  lo_progress: number;
+  share_of_batch: number;
+  categories: ErrorCategoryRow[];
+};
+
+/** One failure that a later reprocess settled — the audit trail behind the suppression. */
+export type RetryResolvedRow = {
+  mid: string | null;
+  merchant_name: string | null;
+  partner_name: string | null;
+  category: string | null;
+  amount: number | null;
+  beneficiary_id: string | null;
+  failed_at: string | null;
+  failed_settled_by: string | null;
+  failed_stan: string;
+  failed_remark: string | null;
+  settled_at: string | null;
+  settled_by: string | null;
+  settled_stan: string;
+  same_batch: boolean;
+};
+
+export type ErrorClassificationData = {
+  batch: Batch;
+  totals: {
+    total_errors: number;
+    entities: number;
+    categories: number;
+    by_status: { failed: number; pending: number; lo_progress: number };
+    by_side: Record<string, number>;
+    retry_resolved: number;
+  };
+  entities: ErrorEntity[];
+  categories: {
+    category: string;
+    side: ErrorSide;
+    count: number;
+    entity_count: number;
+    share_of_batch: number;
+  }[];
+  retry_resolved_rows: RetryResolvedRow[];
+};
 
 export const batchesApi = {
   upload: async (file: File): Promise<BatchWithDashboard> => {
@@ -106,6 +177,12 @@ export const batchesApi = {
   finish: (id: number) => request<Batch>(`/batches/${id}/finish`, { method: "POST" }),
 
   getReportUrl: (id: number) => `/api/batches/${id}/report`,
+
+  errorClassification: (id: number) =>
+    request<ErrorClassificationData>(`/batches/${id}/error-classification`),
+
+  getErrorClassificationUrl: (id: number) =>
+    `/api/batches/${id}/error-classification/export`,
 
   getAggregatorReportUrl: (batchId: number, partnerName: string, status?: string) => 
     `/api/batches/${batchId}/export-aggregator/${encodeURIComponent(partnerName)}${status ? `?status=${status}` : ""}`,

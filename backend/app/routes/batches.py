@@ -15,7 +15,12 @@ from app.models.batch import Batch
 from app.models.issue_status import IssueStatus
 from app.services.excel_ingest import ingest_excel
 from app.services.dashboard_service import build_dashboard
-from app.services.report_generator import generate_report_bytes, generate_aggregator_report_bytes
+from app.services.error_classification import build_error_classification
+from app.services.report_generator import (
+    generate_aggregator_report_bytes,
+    generate_error_classification_bytes,
+    generate_report_bytes,
+)
 
 batches_bp = Blueprint("batches", __name__, url_prefix="/api/batches")
 
@@ -116,6 +121,30 @@ def download_report(batch_id):
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         as_attachment=True,
         download_name=filename,
+    )
+
+
+@batches_bp.get("/<int:batch_id>/error-classification")
+def error_classification(batch_id):
+    """
+    Failure frequency per aggregator / bank-wallet / SCT, for the dashboard's
+    Error Classification tab. Pure classification -- not filtered by ops
+    status, unlike the Solve view.
+    """
+    return jsonify(build_error_classification(batch_id))
+
+
+@batches_bp.get("/<int:batch_id>/error-classification/export")
+def export_error_classification(batch_id):
+    """The same table as a one-sheet Excel download -- numbers only, no charts."""
+    batch = Batch.query.get_or_404(batch_id)
+    report_bytes = generate_error_classification_bytes(batch.id)
+
+    return send_file(
+        io.BytesIO(report_bytes),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"Error_Classification_{batch.name}.xlsx",
     )
 
 

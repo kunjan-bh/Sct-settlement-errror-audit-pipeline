@@ -1,9 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { FiDownload, FiCheckCircle, FiTrash2 } from "react-icons/fi";
+import { FiDownload, FiCheckCircle, FiTrash2, FiRefreshCw } from "react-icons/fi";
 import { batchesApi, type BatchWithDashboard, type IssueStatusValue, type MidOverride, type PartnerSummary, type Issue } from "../lib/api";
 import StatCard from "../components/StatCard";
 import IssueTable, { type FlatIssueRow } from "../components/IssueTable";
+import ErrorClassification from "../components/ErrorClassification";
+
+type TabKey = "solve" | "errors";
 
 export default function DashboardPage() {
   const { batchId } = useParams<{ batchId: string }>();
@@ -19,6 +22,7 @@ export default function DashboardPage() {
   const [deleting, setDeleting] = useState(false);
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const [unresolvedCount, setUnresolvedCount] = useState(0);
+  const [tab, setTab] = useState<TabKey>("solve");
 
   const load = useCallback(async () => {
     try {
@@ -218,6 +222,32 @@ export default function DashboardPage() {
         </div>
       </header>
 
+      {/* Two views of the same batch: what ops still has to fix (Solve), and
+          what actually broke and how often (Error Classification). */}
+      <nav className="flex items-center gap-1 border-b border-neutral-200 -mt-2">
+        {([
+          { key: "solve", label: "Solve Batch" },
+          { key: "errors", label: "Error Classification" },
+        ] as { key: TabKey; label: string }[]).map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setTab(t.key)}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors cursor-pointer ${
+              tab === t.key
+                ? "border-neutral-900 text-neutral-900"
+                : "border-transparent text-neutral-500 hover:text-neutral-800"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
+      {tab === "errors" && <ErrorClassification batchId={id} />}
+
+      {tab === "solve" && (
+      <>
       <section className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
         <StatCard label="Total Txns" value={dashboard.totals.total_transactions} />
         <StatCard label="Pending" value={dashboard.totals.pending} />
@@ -228,6 +258,26 @@ export default function DashboardPage() {
         <StatCard label="No Aggregator" value={dashboard.totals.no_aggregator} />
         <StatCard label="Aggregators" value={dashboard.totals.total_aggregators} />
       </section>
+
+      {/* Failures a later reprocess already settled are kept out of the issue
+          tables below -- but never silently. */}
+      {dashboard.totals.retry_resolved > 0 && (
+        <div className="flex items-start gap-2.5 border border-emerald-200 bg-emerald-50/60 rounded-lg px-4 py-3">
+          <FiRefreshCw className="text-emerald-600 mt-0.5 shrink-0 text-sm" />
+          <p className="text-xs text-emerald-900 leading-relaxed">
+            <strong>{dashboard.totals.retry_resolved}</strong> failed settlement
+            {dashboard.totals.retry_resolved === 1 ? " was" : "s were"} reprocessed and settled later, so
+            {dashboard.totals.retry_resolved === 1 ? " it is" : " they are"} excluded from the issues below.{" "}
+            <button
+              type="button"
+              onClick={() => setTab("errors")}
+              className="underline font-semibold cursor-pointer hover:text-emerald-700"
+            >
+              See which ones
+            </button>
+          </p>
+        </div>
+      )}
 
       {dashboard.aggregator_summary.length > 0 && (
         <section className="space-y-4">
@@ -284,6 +334,8 @@ export default function DashboardPage() {
         />
         {notesSaving && <p className="text-xs text-neutral-400">Saving…</p>}
       </section>
+      </>
+      )}
 
       {/* Minimalist Confirmation Modal */}
       {showFinishConfirm && (

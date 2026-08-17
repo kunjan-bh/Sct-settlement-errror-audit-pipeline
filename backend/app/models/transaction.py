@@ -48,6 +48,24 @@ class Transaction(db.Model):
     # any columns not modeled above -- preserved as JSON, nothing is lost
     extra_data = db.Column(db.JSON, nullable=True)
 
+    # --- retry-matching fields ---
+    # These four also live in extra_data, but they are promoted to real
+    # indexed columns because retry detection joins on them across batches:
+    # a settlement that failed on the 11th and was reprocessed on the 12th is
+    # two rows in two different uploads, matched by
+    # (mid, txn_amount, beneficiary_id) ordered by txn_datetime. Doing that
+    # through JSON extraction on 20k+ rows per batch is not viable.
+    txn_amount = db.Column(db.Numeric(18, 2), nullable=True, index=True)
+    settled_by = db.Column(db.String(32), nullable=True)  # Real Time|System Default|On Call
+    beneficiary_id = db.Column(db.String(64), nullable=True, index=True)  # Bank Account/Wallet ID
+    txn_datetime = db.Column(db.DateTime, nullable=True, index=True)
+
+    # Set when this failed row was later settled by a reprocess. The row is
+    # kept (originals are never destroyed) but drops out of the "needs
+    # attention" counts -- see services/retry_matching.py.
+    retry_resolved = db.Column(db.Boolean, nullable=False, default=False, index=True)
+    retry_resolved_by_id = db.Column(db.Integer, nullable=True)  # covering Transaction.id
+
     # --- resolved partner (from PartnerMapping, computed at ingest time) ---
     partner_name = db.Column(db.String(64), nullable=True, index=True)
     partner_type = db.Column(db.String(16), nullable=True)  # "aggregator" | "bank" | None
@@ -76,4 +94,9 @@ class Transaction(db.Model):
             "partner_type": self.partner_type,
             "error_side": self.error_side,
             "error_category": self.error_category,
+            "txn_amount": float(self.txn_amount) if self.txn_amount is not None else None,
+            "settled_by": self.settled_by,
+            "beneficiary_id": self.beneficiary_id,
+            "txn_datetime": self.txn_datetime.isoformat() if self.txn_datetime else None,
+            "retry_resolved": bool(self.retry_resolved),
         }

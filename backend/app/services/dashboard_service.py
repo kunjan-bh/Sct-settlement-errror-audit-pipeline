@@ -12,19 +12,30 @@ from collections import defaultdict
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.issue_status import IssueStatus
+from app.services.status_utils import normalize_txn_status
 
 
 def build_dashboard(batch_id: int) -> dict:
-    transactions = Transaction.query.filter_by(batch_id=batch_id).all()
+    all_transactions = Transaction.query.filter_by(batch_id=batch_id).all()
     issue_statuses = {
         (i.side, i.partner_name, i.category, i.txn_status): i
         for i in IssueStatus.query.filter_by(batch_id=batch_id).all()
     }
 
-    totals = _build_totals(transactions, issue_statuses)
+    # Failures that were later reprocessed and settled are dropped from every
+    # issue list -- ops should not chase a settlement that already went
+    # through. The rows still exist and are counted in totals.retry_resolved,
+    # with the full pairing available at /error-classification.
+    transactions = [t for t in all_transactions if not t.retry_resolved]
+
+    totals = _build_totals(all_transactions, issue_statuses)
     aggregator_summary = _build_partner_summary(transactions, issue_statuses, bucket="aggregator", batch_id=batch_id)
     bank_summary = _build_partner_summary(transactions, issue_statuses, bucket="bank_wallet", batch_id=batch_id)
     sct_summary = _build_sct_summary(transactions, issue_statuses, batch_id=batch_id)
+
+    # Single commit, after every builder has finished reading the loaded
+    # transactions -- see the note in _build_partner_summary.
+    db.session.commit()
 
     return {
         "totals": totals,
@@ -55,16 +66,29 @@ def _get_last_solved_comment(side: str, partner_name: str | None, category: str,
 
 def _build_totals(transactions: list[Transaction], issue_statuses: dict) -> dict:
     total = len(transactions)
-    # Count by transaction status instead of issue_statuses? The user wants to see how many transactions failed/pending.
-    pending = sum(1 for t in transactions if (t.status or "").lower() == "pending")
-    failed = sum(1 for t in transactions if (t.status or "").lower() == "failed")
-    lo_progress = sum(1 for t in transactions if (t.status or "").lower() in ["lo progress", "lo", "lo_progress"])
-    success_count = sum(1 for t in transactions if (t.status or "").lower() == "success")
+    # total_transactions counts the file as delivered; every other figure here
+    # excludes failures that a later reprocess already settled.
+    retry_resolved = sum(1 for t in transactions if t.retry_resolved)
+    live = [t for t in transactions if not t.retry_resolved]
 
-    settlement_failed = sum(1 for t in transactions if t.error_side in ("aggregator", "bank") and (t.status or "").lower() != "success")
-    transaction_failed = sum(1 for t in transactions if t.error_side == "sct" and (t.status or "").lower() != "success")
-    no_aggregator = sum(1 for t in transactions if t.partner_name == "No Aggregator")
-    total_aggregators = len({t.partner_name for t in transactions if t.partner_type == "aggregator"})
+    # Bucket every row through the shared normalizer -- the input files spell
+    # the third bucket "In progress", which ops calls "LO".
+    buckets = [normalize_txn_status(t.status) for t in live]
+    pending = buckets.count("pending")
+    failed = buckets.count("failed")
+    lo_progress = buckets.count("lo_progress")
+    success_count = buckets.count("success")
+
+    settlement_failed = sum(
+        1 for t, b in zip(live, buckets)
+        if t.error_side in ("aggregator", "bank") and b != "success"
+    )
+    transaction_failed = sum(
+        1 for t, b in zip(live, buckets)
+        if t.error_side == "sct" and b != "success"
+    )
+    no_aggregator = sum(1 for t in live if t.partner_name == "No Aggregator")
+    total_aggregators = len({t.partner_name for t in live if t.partner_type == "aggregator"})
 
     return {
         "total_transactions": total,
@@ -76,6 +100,7 @@ def _build_totals(transactions: list[Transaction], issue_statuses: dict) -> dict
         "total_aggregators": total_aggregators,
         "lo_progress": lo_progress,
         "success_issues": success_count,
+        "retry_resolved": retry_resolved,
     }
 
 
@@ -89,8 +114,7 @@ def _build_partner_summary(transactions: list[Transaction], issue_statuses: dict
     for partner_name, rows in sorted(by_partner.items()):
         by_txn_status: dict[str, list[Transaction]] = defaultdict(list)
         for r in rows:
-            s = (r.status.lower().replace(" ", "_") if r.status else "unknown")
-            by_txn_status[s].append(r)
+            by_txn_status[normalize_txn_status(r.status)].append(r)
 
         def build_issues_for_status(txn_status_name, status_rows):
             by_category: dict[str, list[Transaction]] = defaultdict(list)
@@ -144,9 +168,9 @@ def _build_partner_summary(transactions: list[Transaction], issue_statuses: dict
             "issues_lo_progress": build_issues_for_status("lo_progress", by_txn_status.get("lo_progress", [])),
         })
 
-    # Commit any newly created IssueStatus rows
-    db.session.commit()
-
+    # Deliberately no commit here -- build_dashboard commits once at the end.
+    # Committing mid-build expires every loaded Transaction, so the next
+    # builder re-SELECTs all 21k rows one at a time (~20s on a real batch).
     return sorted(result, key=lambda p: -(p["failed"] + p["pending"] + p["lo_progress"]))
 
 
@@ -155,9 +179,9 @@ def _build_sct_summary(transactions: list[Transaction], issue_statuses: dict, ba
 
     by_txn_status: dict[str, list[Transaction]] = defaultdict(list)
     for r in sct_rows:
-        s = (r.status.lower().replace(" ", "_") if r.status else "unknown")
-        by_txn_status[s].append(r)
-        
+        by_txn_status[normalize_txn_status(r.status)].append(r)
+
+
     def build_issues_for_status(txn_status_name, status_rows):
         by_category: dict[str, list[Transaction]] = defaultdict(list)
         for r in status_rows:
@@ -196,9 +220,7 @@ def _build_sct_summary(transactions: list[Transaction], issue_statuses: dict, ba
                 })
         return sorted(issues, key=lambda i: -i["count"])
 
-    # Commit any newly created IssueStatus rows
-    db.session.commit()
-
+    # See _build_partner_summary: the single commit lives in build_dashboard.
     return {
         "total_issues": len(sct_rows),
         "issues_failed": build_issues_for_status("failed", by_txn_status.get("failed", [])),

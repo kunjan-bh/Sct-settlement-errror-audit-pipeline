@@ -25,6 +25,8 @@ from app.models.batch import Batch
 from app.models.transaction import Transaction
 from app.models.issue_status import IssueStatus
 from app.services.classification_service import RuleEngine, PartnerResolver
+from app.services.status_utils import normalize_txn_status
+from app.services.retry_matching import parse_amount, parse_txn_datetime, reconcile_retries
 
 KNOWN_COLUMN_MAP = {
     "MID": "mid",
@@ -120,7 +122,11 @@ def ingest_excel(file_path: str, batch_date: date | None = None) -> Batch:
         extra_data = {col: _json_safe(row.get(col)) for col in extra_cols}
 
         status_val = _clean(row.get("Status"))
-        txn_status = (status_val.lower().replace(" ", "_") if status_val else "unknown")
+        txn_status = normalize_txn_status(status_val)
+
+        # Promoted out of extra_data because retry matching joins on them
+        # across batches -- see services/retry_matching.py.
+        beneficiary = _clean(row.get("Bank Account/Wallet ID"))
 
         txn = Transaction(
             batch_id=batch.id,
@@ -130,6 +136,11 @@ def ingest_excel(file_path: str, batch_date: date | None = None) -> Batch:
             status_code=_clean(row.get("Status Code")),
             remark=remark,
             extra_data=extra_data,
+            txn_amount=parse_amount(row.get("Txn Amount")),
+            settled_by=_clean(row.get("Settled By")),
+            beneficiary_id=beneficiary,
+            txn_datetime=parse_txn_datetime(row.get("Transaction Date")),
+            retry_resolved=False,
             partner_name=partner_name,
             partner_type=bucket,
             error_side=result.side,
@@ -159,6 +170,12 @@ def ingest_excel(file_path: str, batch_date: date | None = None) -> Batch:
         db.session.add(issue)
 
     db.session.commit()
+
+    # Must run after the commit (it re-queries to get assigned ids). Scoped to
+    # a window around this batch, so today's reprocessed successes can also
+    # resolve failures from a file uploaded yesterday.
+    reconcile_retries(around_batch_id=batch.id)
+
     return batch
 
 
