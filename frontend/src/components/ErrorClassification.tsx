@@ -8,6 +8,7 @@ import {
   type ErrorSide,
   type RetryResolvedRow,
 } from "../lib/api";
+import { cacheGet, cacheSet } from "../lib/cache";
 
 /**
  * Error Classification view.
@@ -53,17 +54,35 @@ const SIDE_LABEL: Record<ErrorSide, string> = {
 
 const nf = new Intl.NumberFormat();
 
+const cacheKeyFor = (batchId: number) => `error-classification:${batchId}`;
+
 export default function ErrorClassification({ batchId }: { batchId: number }) {
-  const [data, setData] = useState<ErrorClassificationData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const cached = cacheGet<ErrorClassificationData>(cacheKeyFor(batchId));
+  const [data, setData] = useState<ErrorClassificationData | null>(cached ?? null);
+  const [loading, setLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Not filtered by ops status (see file header), so nothing outside a
+    // fresh upload changes this data -- once a batch's classification is
+    // loaded, reuse it across tab switches instead of re-hitting the
+    // backend's full re-aggregation every time.
+    const alreadyCached = cacheGet<ErrorClassificationData>(cacheKeyFor(batchId));
+    if (alreadyCached) {
+      setData(alreadyCached);
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
     setLoading(true);
     batchesApi
       .errorClassification(batchId)
-      .then((d) => !cancelled && setData(d))
+      .then((d) => {
+        if (cancelled) return;
+        cacheSet(cacheKeyFor(batchId), d);
+        setData(d);
+      })
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Failed to load"))
       .finally(() => !cancelled && setLoading(false));
     return () => {

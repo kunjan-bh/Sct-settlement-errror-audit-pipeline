@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { FiDownload, FiCheckCircle, FiTrash2, FiRefreshCw } from "react-icons/fi";
 import { batchesApi, type BatchWithDashboard, type IssueStatusValue, type MidOverride, type PartnerSummary, type Issue } from "../lib/api";
+import { cacheGet, cacheSet, cacheInvalidate } from "../lib/cache";
 import StatCard from "../components/StatCard";
 import IssueTable, { type FlatIssueRow } from "../components/IssueTable";
 import ErrorClassification from "../components/ErrorClassification";
@@ -24,9 +25,21 @@ export default function DashboardPage() {
   const [unresolvedCount, setUnresolvedCount] = useState(0);
   const [tab, setTab] = useState<TabKey>("solve");
 
-  const load = useCallback(async () => {
+  const cacheKey = `batch:${id}`;
+
+  const load = useCallback(async (opts?: { force?: boolean }) => {
+    if (!opts?.force) {
+      const cached = cacheGet<BatchWithDashboard>(cacheKey);
+      if (cached) {
+        setData(cached);
+        setNotes(cached.batch.notes ?? "");
+        setLoading(false);
+        return;
+      }
+    }
     try {
       const result = await batchesApi.get(id);
+      cacheSet(cacheKey, result);
       setData(result);
       setNotes(result.batch.notes ?? "");
     } catch (e) {
@@ -34,7 +47,8 @@ export default function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, cacheKey]);
 
   useEffect(() => {
     setLoading(true);
@@ -43,7 +57,7 @@ export default function DashboardPage() {
 
   const handleUpdateIssue = async (issueId: number, patch: { status?: IssueStatusValue; comment?: string; mid_overrides?: Record<string, MidOverride> }) => {
     await batchesApi.updateIssue(id, issueId, patch);
-    await load();
+    await load({ force: true });
   };
 
   const handleNotesBlur = async () => {
@@ -51,6 +65,7 @@ export default function DashboardPage() {
     setNotesSaving(true);
     try {
       await batchesApi.updateNotes(id, notes);
+      cacheInvalidate(cacheKey);
     } finally {
       setNotesSaving(false);
     }
@@ -61,7 +76,7 @@ export default function DashboardPage() {
     setFinishing(true);
     try {
       await batchesApi.finish(id);
-      await load();
+      await load({ force: true });
       window.location.href = batchesApi.getReportUrl(id);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Failed to finish batch");
@@ -97,6 +112,7 @@ export default function DashboardPage() {
       setDeleting(true);
       try {
         await batchesApi.remove(id);
+        cacheInvalidate(cacheKey);
         navigate("/");
       } catch (e) {
         alert(e instanceof Error ? e.message : "Failed to delete batch");
