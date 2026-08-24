@@ -30,8 +30,7 @@ def create_app(config_class=Config):
     from app.routes.batches import batches_bp
     app.register_blueprint(batches_bp)
 
-    # More blueprints get registered here as we build them, e.g.:
-    # from app.routes.batches import batches_bp
-    # app.register_blueprint(batches_bp)
+    from app.routes.analytics import analytics_bp
+    app.register_blueprint(analytics_bp)
 
     return app

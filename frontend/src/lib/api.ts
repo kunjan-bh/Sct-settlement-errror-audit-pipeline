@@ -155,6 +155,71 @@ export type ErrorClassificationData = {
   retry_resolved_rows: RetryResolvedRow[];
 };
 
+// ── Analytics ─────────────────────────────────────────────────────────────
+// Cross-batch: every batch whose processing date falls in [from, to] is
+// included (open or finished), unlike every other endpoint here which is
+// scoped to one batch_id. See backend/app/services/analytics_service.py.
+
+export type AnalyticsBucket = "day" | "week" | "month";
+
+export type AnalyticsTrendPoint = {
+  bucket_label: string;
+  bucket_start: string;
+  total: number;
+  failed: number;
+  pending: number;
+  lo_progress: number;
+  solved: number;
+  unsolved: number;
+};
+
+export type AnalyticsEntity = {
+  entity: string;
+  entity_type: EntityType;
+  total: number;
+  failed: number;
+  pending: number;
+  lo_progress: number;
+  solved: number;
+  unsolved: number;
+};
+
+/** Every entity seen in the range, regardless of the current exclude filter — used to populate the exclude picker so toggling one back on is always possible. */
+export type AnalyticsAvailableEntity = { entity: string; entity_type: EntityType };
+
+export type AnalyticsCategory = {
+  category: string;
+  side: ErrorSide;
+  count: number;
+  share_of_batch: number;
+};
+
+export type AnalyticsData = {
+  range: { from: string; to: string; bucket: AnalyticsBucket };
+  kpis: {
+    total_transactions: number;
+    total_errors: number;
+    solved: number;
+    unsolved: number;
+    resolution_rate: number;
+    batches_included: number;
+  };
+  trend: AnalyticsTrendPoint[];
+  status_breakdown: { failed: number; pending: number; lo_progress: number };
+  resolution_breakdown: { solved: number; unsolved: number };
+  top_entities: AnalyticsEntity[];
+  top_categories: AnalyticsCategory[];
+  available_entities: AnalyticsAvailableEntity[];
+};
+
+export const analyticsApi = {
+  get: (from: string, to: string, bucket: AnalyticsBucket, excludeEntities: string[] = []) => {
+    const params = new URLSearchParams({ from, to, bucket });
+    excludeEntities.forEach((e) => params.append("exclude_entities", e));
+    return request<AnalyticsData>(`/analytics?${params.toString()}`);
+  },
+};
+
 export const batchesApi = {
   upload: async (file: File): Promise<BatchWithDashboard> => {
     const formData = new FormData();

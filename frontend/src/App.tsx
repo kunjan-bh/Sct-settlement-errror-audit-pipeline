@@ -4,6 +4,7 @@ import UploadPage from "./pages/UploadPage";
 import DashboardPage from "./pages/DashboardPage";
 import BatchListPage from "./pages/BatchListPage";
 import PartnerMappingPage from "./pages/PartnerMappingPage";
+import AnalyticsPage from "./pages/AnalyticsPage";
 
 function App() {
   return (
@@ -15,6 +16,7 @@ function App() {
           <Route path="/batches" element={<BatchListPage />} />
           <Route path="/dashboard/:batchId" element={<DashboardPage />} />
           <Route path="/partner-mapping" element={<PartnerMappingPage />} />
+          <Route path="/analytics" element={<AnalyticsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
