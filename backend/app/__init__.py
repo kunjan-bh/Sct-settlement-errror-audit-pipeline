@@ -33,4 +33,7 @@ def create_app(config_class=Config):
     from app.routes.analytics import analytics_bp
     app.register_blueprint(analytics_bp)
 
+    from app.routes.settlement_type import settlement_type_bp
+    app.register_blueprint(settlement_type_bp)
+
     return app

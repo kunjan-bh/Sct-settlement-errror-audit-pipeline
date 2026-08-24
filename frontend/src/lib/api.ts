@@ -220,6 +220,37 @@ export const analyticsApi = {
   },
 };
 
+// ── Settlement Type Report ───────────────────────────────────────────────
+// The success-side counterpart to Analytics: of what settled, how did it
+// settle (Real Time / System Default / On Call), broken down by entity.
+// Same date-range-over-existing-batches scope, no upload of its own. See
+// backend/app/services/settlement_type_service.py.
+
+export type SettlementMethodCounts = {
+  real_time: number;
+  system_default: number;
+  on_call: number;
+  unknown: number;
+};
+
+export type SettlementTypeEntity = SettlementMethodCounts & {
+  entity: string;
+  entity_type: EntityType;
+  total: number;
+};
+
+export type SettlementTypeData = {
+  range: { from: string; to: string };
+  kpis: SettlementMethodCounts & { total_settled: number; batches_included: number };
+  method_breakdown: SettlementMethodCounts;
+  entities: SettlementTypeEntity[];
+};
+
+export const settlementTypeApi = {
+  get: (from: string, to: string) =>
+    request<SettlementTypeData>(`/settlement-type?from=${from}&to=${to}`),
+};
+
 export const batchesApi = {
   upload: async (file: File): Promise<BatchWithDashboard> => {
     const formData = new FormData();

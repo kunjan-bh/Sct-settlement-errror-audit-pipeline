@@ -2,12 +2,18 @@ import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { FiChevronDown } from "react-icons/fi";
 
 // Batch-scoped workflow, grouped under one "Settlement Error" hover menu.
-// Partner Mapping lives outside it -- it's general config (which member
-// codes belong to which aggregator/bank), not part of the batch workflow.
 const settlementItems = [
   { to: "/upload", label: "Upload" },
   { to: "/batches", label: "Batches" },
   { to: "/analytics", label: "Analytics" },
+];
+
+// Outside the dropdown: general config (Partner Mapping) and the success-
+// side report (Settlement Type Report) -- neither is part of the
+// batch/error-audit workflow the dropdown groups, so both stay top-level.
+const topLevelItems = [
+  { to: "/partner-mapping", label: "Partner Mapping" },
+  { to: "/settlement-type", label: "Settlement Type Report" },
 ];
 
 // Center-anchored underline that grows in on hover -- shared by every nav
@@ -89,17 +95,20 @@ export default function Layout() {
             </div>
           </div>
 
-          <NavLink
-            to="/partner-mapping"
-            className={({ isActive }) =>
-              `group relative px-3 py-1.5 rounded-md text-sm font-medium transition-colors duration-150 ${
-                isActive ? "bg-neutral-900 text-white" : "text-neutral-500 hover:text-neutral-900"
-              }`
-            }
-          >
-            Partner Mapping
-            <HoverUnderline />
-          </NavLink>
+          {topLevelItems.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              className={({ isActive }) =>
+                `group relative px-3 py-1.5 rounded-md text-sm font-medium transition-colors duration-150 ${
+                  isActive ? "bg-neutral-900 text-white" : "text-neutral-500 hover:text-neutral-900"
+                }`
+              }
+            >
+              {item.label}
+              <HoverUnderline />
+            </NavLink>
+          ))}
         </div>
       </nav>
       <Outlet />

@@ -5,6 +5,7 @@ import DashboardPage from "./pages/DashboardPage";
 import BatchListPage from "./pages/BatchListPage";
 import PartnerMappingPage from "./pages/PartnerMappingPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
+import SettlementTypePage from "./pages/SettlementTypePage";
 
 function App() {
   return (
@@ -17,6 +18,7 @@ function App() {
           <Route path="/dashboard/:batchId" element={<DashboardPage />} />
           <Route path="/partner-mapping" element={<PartnerMappingPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
+          <Route path="/settlement-type" element={<SettlementTypePage />} />
         </Route>
       </Routes>
     </BrowserRouter>
