@@ -237,18 +237,105 @@ export type SettlementTypeEntity = SettlementMethodCounts & {
   entity: string;
   entity_type: EntityType;
   total: number;
+  /** Total settled amount for this entity, in NPR. */
+  amount: number;
+};
+
+export type SettlementMethodAmounts = {
+  real_time: number;
+  system_default: number;
+  on_call: number;
+  unknown: number;
 };
 
 export type SettlementTypeData = {
   range: { from: string; to: string };
-  kpis: SettlementMethodCounts & { total_settled: number; batches_included: number };
+  kpis: SettlementMethodCounts & {
+    total_settled: number;
+    total_amount_settled: number;
+    batches_included: number;
+  };
   method_breakdown: SettlementMethodCounts;
+  method_amount_breakdown: SettlementMethodAmounts;
   entities: SettlementTypeEntity[];
 };
+
+// Document Analysis: same Settlement Type breakdown for one uploaded file
+// that never becomes a batch -- nothing is persisted, no Batch/Transaction
+// row is created. See backend/app/services/adhoc_settlement_service.py.
+
+export type AdhocSettlementTypeData = {
+  file_name: string;
+  row_count: number;
+  kpis: SettlementMethodCounts & { total_settled: number; total_amount_settled: number };
+  method_breakdown: SettlementMethodCounts;
+  method_amount_breakdown: SettlementMethodAmounts;
+  entities: SettlementTypeEntity[];
+};
+
+// Both report downloads are POST/GET-of-bytes rather than JSON, so they're
+// triggered the same way: fetch the blob, hand it to the browser via a
+// throwaway object URL. batchesApi's report downloads can use a plain
+// <a href download> because they're GET; the ad-hoc one is a POST (it has
+// to resend the file, since nothing was persisted server-side to refetch).
+async function downloadBlob(url: string, options: RequestInit, fallbackName: string): Promise<void> {
+  const res = await fetch(url, options);
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || `Download failed: ${res.status}`);
+  }
+  const disposition = res.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="?([^"]+)"?/);
+  const filename = match ? match[1] : fallbackName;
+
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+}
 
 export const settlementTypeApi = {
   get: (from: string, to: string) =>
     request<SettlementTypeData>(`/settlement-type?from=${from}&to=${to}`),
+
+  downloadReport: (from: string, to: string) =>
+    downloadBlob(
+      `/api/settlement-type/report?from=${from}&to=${to}`,
+      { method: "GET" },
+      `Settlement_Type_Report_${from}_to_${to}.xlsx`
+    ),
+
+  analyzeDocument: async (file: File): Promise<AdhocSettlementTypeData> => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const res = await fetch("/api/settlement-type/adhoc-analysis", { method: "POST", body: formData });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Analysis failed: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  /**
+   * `txnFile` is that day's Transaction List, and is optional. When it's
+   * sent, the report's per-entity sheets pair every settled MID with the
+   * transaction it settled; without it the report is unchanged.
+   */
+  downloadDocumentReport: (file: File, txnFile?: File | null) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    if (txnFile) formData.append("txn_file", txnFile);
+    return downloadBlob(
+      "/api/settlement-type/adhoc-analysis/report",
+      { method: "POST", body: formData },
+      `Settlement_Type_Report_${file.name.replace(/\.[^/.]+$/, "")}.xlsx`
+    );
+  },
 };
 
 export const batchesApi = {

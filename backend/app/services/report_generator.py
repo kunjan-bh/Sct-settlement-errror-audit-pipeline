@@ -1,4 +1,6 @@
 import os
+import re
+from collections import defaultdict
 from io import BytesIO
 from datetime import datetime
 import pandas as pd
@@ -7,6 +9,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.chart import BarChart, PieChart, LineChart, Reference
 from openpyxl.chart.label import DataLabelList
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from app.models.batch import Batch
 from app.models.transaction import Transaction
@@ -18,6 +21,14 @@ from app.services.error_classification import (
     ENTITY_TYPE_LABELS,
     SIDE_LABELS,
     build_error_classification,
+)
+from app.services.settlement_type_service import build_settlement_type_report, build_settlement_type_mid_rows
+from app.services.adhoc_settlement_service import build_adhoc_settlement_type_full
+from app.services.transaction_reconcile import (
+    TXN_REPORT_HEADERS,
+    TXN_REPORT_KEYS,
+    attach_transactions,
+    build_transaction_index,
 )
 
 
@@ -474,6 +485,528 @@ def generate_report_bytes(batch_id: int) -> bytes:
     wb.save(output)
     output.seek(0)
     return output.getvalue()
+
+
+# ==========================================
+# Settlement Type Report (date range + ad-hoc Document Analysis)
+# ==========================================
+
+_METHOD_LABEL_ORDER = [
+    ("real_time", "Real Time"),
+    ("system_default", "System Default"),
+    ("on_call", "On Call"),
+    ("unknown", "Unknown"),
+]
+
+
+def _write_settlement_type_workbook(
+    meta: list[tuple[str, object]],
+    data: dict,
+    mid_rows: list[dict],
+    reconciliation: dict | None = None,
+) -> bytes:
+    """
+    Shared layout for both the date-range Settlement Type report and the
+    one-file Document Analysis report -- same shape either way:
+
+      Sheet 1 "Summary": title + metadata block, then two tables --
+        Settlement Method Split by Count and by Amount.
+      Sheet 2 "Entity Breakdown": one row per entity (aggregator/bank/
+        wallet/SCT), same columns as the on-page table.
+      Sheet 3+: one sheet per entity, listing every MID that settled under
+        it -- see _write_entity_mid_sheets. This detail is report-only, by
+        request: neither on-page view shows it.
+
+    `meta` carries whatever's specific to the caller (date range + batches
+    included, or file name + rows read) as (label, value) pairs.
+
+    `reconciliation` is the tally from transaction_reconcile.attach_
+    transactions, present only when a Transaction List was uploaded
+    alongside. When it is, Summary gains a trace-rate block and the entity
+    sheets gain their side-by-side transaction table; when it isn't, the
+    workbook is byte-for-byte the report it was before.
+    """
+    font_title = Font(name="Calibri", size=14, bold=True, color="1F4E79")
+    font_section = Font(name="Calibri", size=12, bold=True, color="1F4E79")
+    font_header = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    font_bold = Font(name="Calibri", size=10, bold=True)
+    font_regular = Font(name="Calibri", size=10)
+    fill_header = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
+    thin = Side(border_style="thin", color="D9D9D9")
+    border_cell = Border(left=thin, right=thin, top=thin, bottom=thin)
+    align_left = Alignment(horizontal="left", vertical="center")
+    align_right = Alignment(horizontal="right", vertical="center")
+    align_center = Alignment(horizontal="center", vertical="center")
+
+    kpis = data["kpis"]
+    method_breakdown = data["method_breakdown"]
+    method_amount_breakdown = data["method_amount_breakdown"]
+    entities = data["entities"]
+
+    wb = openpyxl.Workbook()
+    default_sheet = wb.active
+
+    # ---- Sheet 1: Summary ----
+    ws1 = wb.create_sheet(title="Summary")
+    ws1["A1"] = "Settlement Type Report — Summary"
+    ws1["A1"].font = font_title
+
+    row = 3
+    for label, value in meta:
+        ws1.cell(row=row, column=1, value=label).font = font_bold
+        ws1.cell(row=row, column=2, value=value).font = font_regular
+        row += 1
+
+    total_settled = kpis["total_settled"]
+    total_amount = kpis["total_amount_settled"]
+
+    # Table A: by count
+    row += 1
+    ws1.cell(row=row, column=1, value="Settlement Method Split — By Count").font = font_section
+    row += 1
+    for col_idx, h in enumerate(["Method", "Count", "% of Total"], start=1):
+        cell = ws1.cell(row=row, column=col_idx, value=h)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = align_center
+    row += 1
+    for key, label in _METHOD_LABEL_ORDER:
+        count = method_breakdown.get(key, 0)
+        ws1.cell(row=row, column=1, value=label).alignment = align_left
+        ws1.cell(row=row, column=2, value=count).alignment = align_right
+        pct_cell = ws1.cell(row=row, column=3, value=(count / total_settled) if total_settled else 0)
+        pct_cell.alignment = align_right
+        pct_cell.number_format = "0.0%"
+        for c in (1, 2, 3):
+            ws1.cell(row=row, column=c).font = font_regular
+            ws1.cell(row=row, column=c).border = border_cell
+        row += 1
+    ws1.cell(row=row, column=1, value="Total").font = font_bold
+    ws1.cell(row=row, column=2, value=total_settled).font = font_bold
+    ws1.cell(row=row, column=3, value=1.0 if total_settled else 0).font = font_bold
+    ws1.cell(row=row, column=3).number_format = "0.0%"
+    for c in (1, 2, 3):
+        ws1.cell(row=row, column=c).border = border_cell
+        ws1.cell(row=row, column=c).alignment = align_right if c > 1 else align_left
+    row += 1
+
+    # Table B: by amount
+    row += 2
+    ws1.cell(row=row, column=1, value="Settlement Method Split — By Amount").font = font_section
+    row += 1
+    for col_idx, h in enumerate(["Method", "Amount", "% of Total"], start=1):
+        cell = ws1.cell(row=row, column=col_idx, value=h)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = align_center
+    row += 1
+    for key, label in _METHOD_LABEL_ORDER:
+        amount = method_amount_breakdown.get(key, 0.0)
+        ws1.cell(row=row, column=1, value=label).alignment = align_left
+        amt_cell = ws1.cell(row=row, column=2, value=amount)
+        amt_cell.alignment = align_right
+        amt_cell.number_format = "#,##0.00"
+        pct_cell = ws1.cell(row=row, column=3, value=(amount / total_amount) if total_amount else 0)
+        pct_cell.alignment = align_right
+        pct_cell.number_format = "0.0%"
+        for c in (1, 2, 3):
+            ws1.cell(row=row, column=c).font = font_regular
+            ws1.cell(row=row, column=c).border = border_cell
+        row += 1
+    ws1.cell(row=row, column=1, value="Total").font = font_bold
+    total_amt_cell = ws1.cell(row=row, column=2, value=total_amount)
+    total_amt_cell.font = font_bold
+    total_amt_cell.number_format = "#,##0.00"
+    ws1.cell(row=row, column=3, value=1.0 if total_amount else 0).font = font_bold
+    ws1.cell(row=row, column=3).number_format = "0.0%"
+    for c in (1, 2, 3):
+        ws1.cell(row=row, column=c).border = border_cell
+        ws1.cell(row=row, column=c).alignment = align_right if c > 1 else align_left
+
+    # Table C: transaction trace rate -- only when a Transaction List was
+    # uploaded. An unmatched settlement is not necessarily an error (the two
+    # exports can cover different windows), so this is reported as a rate to
+    # eyeball, not as a pass/fail.
+    if reconciliation:
+        row += 3
+        ws1.cell(row=row, column=1, value="Transaction Reconciliation").font = font_section
+        row += 1
+        traced = reconciliation["matched"]
+        settled_rows = reconciliation["settled_rows"]
+        recon_lines = [
+            ("Transaction File:", reconciliation["file_name"]),
+            ("Transactions Read:", reconciliation["txn_rows"]),
+            ("Transaction File Covers:", reconciliation.get("txn_window") or "—"),
+            ("Settlement File Covers:", data.get("window") or "—"),
+            ("Settlements Traced:", traced),
+            ("Settlements Not Traced:", reconciliation["unmatched"]),
+        ]
+        by_network = reconciliation.get("by_network") or {}
+        if by_network:
+            recon_lines.append((
+                "Transactions by Network:",
+                ", ".join(f"{net} {count:,}" for net, count in sorted(by_network.items())),
+            ))
+        for label, value in recon_lines:
+            ws1.cell(row=row, column=1, value=label).font = font_bold
+            ws1.cell(row=row, column=2, value=value).font = font_regular
+            row += 1
+        ws1.cell(row=row, column=1, value="Trace Rate:").font = font_bold
+        rate_cell = ws1.cell(row=row, column=2, value=(traced / settled_rows) if settled_rows else 0)
+        rate_cell.font = font_bold
+        rate_cell.number_format = "0.0%"
+
+        if by_network.get("NQR"):
+            row += 2
+            nqr_note = ws1.cell(
+                row=row, column=1,
+                value=(
+                    f"Note: {by_network['NQR']:,} of these transactions are NQR-issued. Their "
+                    "transaction id and CRRN are bank references (e.g. PRVUNPKA-1219580) that the "
+                    "settlement file does not record anywhere, so they cannot be traced by key and "
+                    "are left blank. Only SmartQR transactions, whose id is the settlement file's "
+                    "STAN and CRRN joined, can be traced."
+                ),
+            )
+            nqr_note.font = Font(name="Calibri", size=9, italic=True, color="6B7280")
+            nqr_note.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            ws1.merge_cells(start_row=row, start_column=1, end_row=row + 2, end_column=3)
+            row += 2
+
+        if not traced:
+            # Silence here is what made this look like the upload was ignored.
+            row += 2
+            note = ws1.cell(
+                row=row, column=1,
+                value=(
+                    "No settlement could be traced to a transaction. The two files most likely "
+                    "cover different windows — compare the two 'Covers' rows above. A settlement "
+                    "run spans a cycle (e.g. 24 Aug 10:00 AM to 25 Aug 09:59 AM), so a "
+                    "transaction export for a single calendar day will only partly overlap it."
+                ),
+            )
+            note.font = Font(name="Calibri", size=9, italic=True, color="B45309")
+            note.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+            ws1.merge_cells(start_row=row, start_column=1, end_row=row + 2, end_column=3)
+
+    for col_idx, width in enumerate([32, 30, 14], start=1):
+        ws1.column_dimensions[get_column_letter(col_idx)].width = width
+
+    # ---- Sheet 2: Entity Breakdown ----
+    ws2 = wb.create_sheet(title="Entity Breakdown")
+    ws2["A1"] = "Settlement Type Report — Entity Breakdown"
+    ws2["A1"].font = font_title
+    ws2["A2"] = (
+        "Of everything that settled successfully, how it settled — by aggregator, "
+        "bank/wallet, and SCT."
+    )
+    ws2["A2"].font = Font(name="Calibri", size=9, italic=True, color="808080")
+
+    headers_entity = [
+        "Entity", "Type", "Real Time", "System Default", "On Call", "Unknown", "Total",
+        "Total Amount",
+    ]
+    header_row = 4
+    for col_idx, h in enumerate(headers_entity, start=1):
+        cell = ws2.cell(row=header_row, column=col_idx, value=h)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = align_center
+
+    row = header_row + 1
+    for ent in entities:
+        ws2.cell(row=row, column=1, value=ent["entity"]).alignment = align_left
+        ws2.cell(
+            row=row, column=2, value=ENTITY_TYPE_LABELS.get(ent["entity_type"], ent["entity_type"]),
+        ).alignment = align_left
+        ws2.cell(row=row, column=3, value=ent["real_time"]).alignment = align_right
+        ws2.cell(row=row, column=4, value=ent["system_default"]).alignment = align_right
+        ws2.cell(row=row, column=5, value=ent["on_call"]).alignment = align_right
+        ws2.cell(row=row, column=6, value=ent["unknown"]).alignment = align_right
+        ws2.cell(row=row, column=7, value=ent["total"]).alignment = align_right
+        amt_cell = ws2.cell(row=row, column=8, value=ent.get("amount", 0.0))
+        amt_cell.alignment = align_right
+        amt_cell.number_format = "#,##0.00"
+        for c in range(1, 9):
+            ws2.cell(row=row, column=c).font = font_regular
+            ws2.cell(row=row, column=c).border = border_cell
+        row += 1
+
+    ws2.freeze_panes = ws2.cell(row=header_row + 1, column=1)
+    if entities:
+        ws2.auto_filter.ref = f"A{header_row}:H{row - 1}"
+
+    for col_idx, width in enumerate([30, 16, 12, 14, 12, 12, 12, 18], start=1):
+        ws2.column_dimensions[get_column_letter(col_idx)].width = width
+
+    # ---- Sheet 3+: one per entity, MID-level detail ----
+    _write_entity_mid_sheets(
+        wb, mid_rows, [e["entity"] for e in entities], reconciling=bool(reconciliation)
+    )
+
+    wb.remove(default_sheet)
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
+
+
+_SHEET_NAME_INVALID = re.compile(r'[\\/*?:\[\]]')
+
+
+def _safe_sheet_name(name: str, used: set) -> str:
+    """openpyxl/Excel worksheet names: no \\ / * ? : [ ], max 31 chars, unique
+    within the workbook. Entity names are free text (from partner mappings),
+    so any of that can show up."""
+    cleaned = _SHEET_NAME_INVALID.sub("_", name or "Entity").strip() or "Entity"
+    cleaned = cleaned[:31]
+    candidate = cleaned
+    n = 2
+    while candidate in used:
+        suffix = f"_{n}"
+        candidate = cleaned[: 31 - len(suffix)] + suffix
+        n += 1
+    used.add(candidate)
+    return candidate
+
+
+# Settlement-side columns of an entity sheet, then a narrow spacer, then the
+# traced transaction. Columns A..E / G.. -- F is the gutter.
+_MID_HEADERS = [
+    "MID", "Merchant Name", "Acquirer Name", "Bank/Wallet Name", "Settlement Type",
+    "Settled Amount", "Service Charge",
+]
+_MID_WIDTHS = [16, 28, 22, 22, 16, 16, 14]
+# Column indices (1-based) of the settlement-side money columns, so the sheet
+# can right-align and number-format them without hunting by header text.
+_MID_AMOUNT_COL = _MID_HEADERS.index("Settled Amount") + 1
+_MID_CHARGE_COL = _MID_HEADERS.index("Service Charge") + 1
+_GUTTER_WIDTH = 3
+_TXN_WIDTHS = [22, 24, 18, 14, 14, 14, 18, 22, 16, 18, 14]
+
+
+def _as_number(text):
+    """Amount cells arrive as text from the Transaction List ("380.00").
+    Write them as numbers so the column totals and sorts like one; anything
+    unparseable is written verbatim rather than dropped."""
+    if text in (None, ""):
+        return None
+    try:
+        return float(str(text).replace(",", ""))
+    except ValueError:
+        return text
+
+
+def _write_entity_mid_sheets(
+    wb, mid_rows: list[dict], entity_order: list[str], reconciling: bool = False
+) -> None:
+    """
+    One sheet per entity (aggregator/bank/wallet/SCT/unmapped), listing every
+    MID that settled under it: MID, Merchant Name, Acquirer Name and Bank/
+    Wallet Name from the source file (blank where the file didn't have that
+    column), and Settlement Type. Settlement Type is constrained to exactly
+    the three real values via an in-cell dropdown -- a blank/unrecognized
+    "Settled By" is left blank rather than guessed, for someone to fill in
+    by hand before sharing.
+
+    When a Transaction List was uploaded alongside the settlement file, each
+    row also carries the transaction it was traced to, in a second table
+    aligned row-for-row across the gutter column -- so the sheet reads "this
+    settlement, for that transaction". A settlement with no trace still gets
+    its transaction row, bordered and empty, so the two tables never drift
+    out of alignment (see services/transaction_reconcile.py).
+
+    Report-only: neither the date-range Settlement Type page nor Document
+    Analysis shows MID-level detail, by request.
+    """
+    if not mid_rows:
+        return
+
+    font_header = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    font_regular = Font(name="Calibri", size=10)
+    font_title = Font(name="Calibri", size=13, bold=True, color="1F4E79")
+    font_band = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    fill_header = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
+    fill_band_settle = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    # The transaction side gets its own (teal) band and header fill so the
+    # eye can tell at a glance which half of a row it is reading.
+    fill_band_txn = PatternFill(start_color="1B6E62", end_color="1B6E62", fill_type="solid")
+    fill_header_txn = PatternFill(start_color="2E8B7A", end_color="2E8B7A", fill_type="solid")
+    fill_untraced = PatternFill(start_color="FBF3F3", end_color="FBF3F3", fill_type="solid")
+    thin = Side(border_style="thin", color="D9D9D9")
+    border_cell = Border(left=thin, right=thin, top=thin, bottom=thin)
+    align_left = Alignment(horizontal="left", vertical="center")
+    align_right = Alignment(horizontal="right", vertical="center")
+    align_center = Alignment(horizontal="center", vertical="center")
+
+    txn_first_col = len(_MID_HEADERS) + 2  # +1 for the gutter, +1 to land past it
+    txn_last_col = txn_first_col + len(TXN_REPORT_HEADERS) - 1
+    last_col = txn_last_col if reconciling else len(_MID_HEADERS)
+    amount_idx = TXN_REPORT_KEYS.index("txn_amount")
+
+    by_entity: dict[str, list[dict]] = defaultdict(list)
+    for r in mid_rows:
+        by_entity[r["entity"]].append(r)
+
+    # Entities missing from entity_order (shouldn't happen -- both callers
+    # derive mid_rows and entities from the same classification pass) still
+    # get a sheet rather than being silently dropped.
+    ordered = [e for e in entity_order if e in by_entity] + [
+        e for e in by_entity if e not in entity_order
+    ]
+
+    used_names: set = set()
+
+    for entity in ordered:
+        rows = by_entity[entity]
+        ws = wb.create_sheet(title=_safe_sheet_name(entity, used_names))
+
+        entity_amount = sum(float(r.get("amount") or 0.0) for r in rows)
+        ws["A1"] = (
+            f"{entity} \u2014 Settled MIDs  "
+            f"({len(rows):,} settlements, NPR {entity_amount:,.2f})"
+        )
+        ws["A1"].font = font_title
+
+        header_row = 3
+
+        if reconciling:
+            # Band row directly above the headers, naming each half.
+            band_row = header_row - 1
+            ws.merge_cells(
+                start_row=band_row, start_column=1,
+                end_row=band_row, end_column=len(_MID_HEADERS),
+            )
+            band_a = ws.cell(row=band_row, column=1, value="Settlement File")
+            band_a.font = font_band
+            band_a.fill = fill_band_settle
+            band_a.alignment = align_center
+
+            ws.merge_cells(
+                start_row=band_row, start_column=txn_first_col,
+                end_row=band_row, end_column=txn_last_col,
+            )
+            band_b = ws.cell(row=band_row, column=txn_first_col, value="Traced Transaction")
+            band_b.font = font_band
+            band_b.fill = fill_band_txn
+            band_b.alignment = align_center
+
+        for col_idx, h in enumerate(_MID_HEADERS, start=1):
+            cell = ws.cell(row=header_row, column=col_idx, value=h)
+            cell.font = font_header
+            cell.fill = fill_header
+            cell.alignment = align_center
+
+        if reconciling:
+            for offset, h in enumerate(TXN_REPORT_HEADERS):
+                cell = ws.cell(row=header_row, column=txn_first_col + offset, value=h)
+                cell.font = font_header
+                cell.fill = fill_header_txn
+                cell.alignment = align_center
+
+        row_idx = header_row + 1
+        for r in rows:
+            values = [
+                r["mid"], r["merchant_name"], r["acquirer_name"],
+                r["bank_wallet_name"], r["settlement_type"],
+                r.get("amount", 0.0), r.get("service_charge", 0.0),
+            ]
+            for col_idx, value in enumerate(values, start=1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                cell.font = font_regular
+                cell.border = border_cell
+                if col_idx in (_MID_AMOUNT_COL, _MID_CHARGE_COL):
+                    cell.alignment = align_right
+                    cell.number_format = "#,##0.00"
+                else:
+                    cell.alignment = align_left
+
+            if reconciling:
+                txn = r.get("txn")
+                for offset, key in enumerate(TXN_REPORT_KEYS):
+                    # An untraced settlement still writes its full transaction
+                    # row -- empty, bordered, tinted -- so row N on the left is
+                    # always row N on the right.
+                    raw = txn.get(key, "") if txn else ""
+                    value = _as_number(raw) if offset == amount_idx else (raw or None)
+                    cell = ws.cell(row=row_idx, column=txn_first_col + offset, value=value)
+                    cell.font = font_regular
+                    cell.border = border_cell
+                    cell.alignment = align_right if offset == amount_idx else align_left
+                    if offset == amount_idx and isinstance(value, float):
+                        cell.number_format = "#,##0.00"
+                    if txn is None:
+                        cell.fill = fill_untraced
+
+            row_idx += 1
+        last_row = row_idx - 1
+
+        if last_row >= header_row + 1:
+            # showDropDown=False is not a typo -- in the underlying Excel XML
+            # schema that flag means "suppress the dropdown arrow", so False
+            # is what actually shows the in-cell picker.
+            dv = DataValidation(
+                type="list",
+                formula1='"Real Time,System Default,On Call"',
+                allow_blank=True,
+                showDropDown=False,
+            )
+            dv.error = "Choose Real Time, System Default, or On Call."
+            dv.errorTitle = "Invalid Settlement Type"
+            ws.add_data_validation(dv)
+            type_col = get_column_letter(_MID_HEADERS.index("Settlement Type") + 1)
+            dv.add(f"{type_col}{header_row + 1}:{type_col}{last_row}")
+
+            ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+            ws.auto_filter.ref = f"A{header_row}:{get_column_letter(last_col)}{last_row}"
+
+        widths = list(_MID_WIDTHS)
+        if reconciling:
+            widths += [_GUTTER_WIDTH] + _TXN_WIDTHS
+        for col_idx, width in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+
+def generate_settlement_type_report_bytes(date_from, date_to) -> bytes:
+    """Downloadable Excel for the date-range Settlement Type report: Summary
+    + Entity Breakdown + one MID-detail sheet per entity.
+
+    No transaction pairing here: that belongs to Document Analysis, where the
+    user hands over both files at once. This report covers batches already in
+    the pipeline over an arbitrary date range, so there is no single
+    Transaction List that would line up with it.
+    """
+    data = build_settlement_type_report(date_from, date_to)
+    mid_rows = build_settlement_type_mid_rows(date_from, date_to)
+    meta = [
+        ("Date Range:", f"{data['range']['from']} to {data['range']['to']}"),
+        ("Batches Included:", data["kpis"]["batches_included"]),
+        ("Total Settled:", data["kpis"]["total_settled"]),
+        ("Total Amount Settled:", data["kpis"]["total_amount_settled"]),
+    ]
+    return _write_settlement_type_workbook(meta, data, mid_rows)
+
+
+def generate_adhoc_settlement_type_report_bytes(
+    file_path: str, file_name: str, txn_file_path: str | None = None, txn_file_name: str = ""
+) -> bytes:
+    """Downloadable Excel for a standalone Document Analysis file: Summary +
+    Entity Breakdown + one MID-detail sheet per entity. txn_file_path is the
+    optional Transaction List uploaded beside the settlement file; when given,
+    every settled MID is traced to the transaction it settled."""
+    full = build_adhoc_settlement_type_full(file_path, file_name)
+    data = full["summary"]
+    mid_rows = full["mid_rows"]
+    index = build_transaction_index(txn_file_path, txn_file_name) if txn_file_path else None
+    reconciliation = attach_transactions(mid_rows, index)
+    meta = [
+        ("Source File:", data["file_name"]),
+        ("Rows Read:", data["row_count"]),
+        ("Total Settled:", data["kpis"]["total_settled"]),
+        ("Total Amount Settled:", data["kpis"]["total_amount_settled"]),
+    ]
+    return _write_settlement_type_workbook(meta, data, mid_rows, reconciliation)
 
 
 ERROR_CLASSIFY_HEADERS = [
