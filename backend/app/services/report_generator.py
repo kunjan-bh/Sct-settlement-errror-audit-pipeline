@@ -32,6 +32,26 @@ from app.services.transaction_reconcile import (
 )
 
 
+def _is_phantom_issue(issue_obj, override_obj, txn_original_status) -> bool:
+    """
+    True for a row that was never an issue in the first place: a settlement
+    that succeeded, with no IssueStatus behind it and no per-MID override.
+
+    The dashboard deliberately does not create an IssueStatus for a success
+    row (services/dashboard_service.py: `if not status_row and
+    txn_status_name != "success"`), so no issue card is ever rendered for
+    one. Ops therefore cannot solve or exclude it -- there is nothing to
+    click. The report used to fall back to "pending" for exactly these rows,
+    which turned every successful settlement into an outstanding issue: on a
+    real batch that was 12,566 phantom "Unclassified / Pending" rows burying
+    the ~30 real ones, and it made a fully worked batch look untouched.
+
+    A success row that ops DID flag deliberately (it has an IssueStatus row,
+    or a MID override) is not phantom and still reports its real status.
+    """
+    return issue_obj is None and override_obj is None and txn_original_status == "success"
+
+
 def generate_report_bytes(batch_id: int) -> bytes:
     """
     Generates the 5-sheet Excel report workbook for the given batch_id and
@@ -226,6 +246,11 @@ def generate_report_bytes(batch_id: int) -> bytes:
             else:
                 override_obj = {"status": raw, "remark": ""}
 
+        # An Issue Summary lists issues. A settlement that succeeded and was
+        # never raised as one does not belong here at all.
+        if _is_phantom_issue(issue_obj, override_obj, txn_original_status):
+            continue
+
         eff_status = (override_obj["status"] if override_obj else None) or (issue_obj.status if issue_obj else "pending")
         if eff_status == "exclude":
             continue
@@ -416,12 +441,19 @@ def generate_report_bytes(batch_id: int) -> bytes:
         if eff_status == "exclude":
             continue
 
-        solved_status = eff_status.replace("_", " ").title()
-        # Override remark takes priority over group comment
-        if override_obj and override_obj.get("remark"):
-            solved_remarks = f"[MID Override] {override_obj['remark']}"
+        # Processed Records is the full preserved copy of the input, so the
+        # row stays -- but a settlement nobody was ever asked to work on has
+        # no ops status to report. Blank, not "Pending".
+        if _is_phantom_issue(issue_obj, override_obj, txn_original_status):
+            solved_status = ""
+            solved_remarks = ""
         else:
-            solved_remarks = issue_obj.comment if issue_obj else ""
+            solved_status = eff_status.replace("_", " ").title()
+            # Override remark takes priority over group comment
+            if override_obj and override_obj.get("remark"):
+                solved_remarks = f"[MID Override] {override_obj['remark']}"
+            else:
+                solved_remarks = issue_obj.comment if issue_obj else ""
 
         row_vals.extend([
             txn.partner_name or "N/A",
@@ -450,9 +482,11 @@ def generate_report_bytes(batch_id: int) -> bytes:
                 if val == "Solved":
                     cell.fill = fill_solved
                     cell.font = font_solved
-                else:
+                elif val:
                     cell.fill = fill_pending
                     cell.font = font_pending
+                # blank (never an issue) stays unshaded -- shading it amber
+                # would read as outstanding work.
         row_idx += 1
 
     # ==========================================
