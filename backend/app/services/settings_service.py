@@ -25,6 +25,10 @@ _DEFINITIONS = {
     "mail_to": ("ashok.koirala@sct.com.np", "str", False),
     "mail_cc": ("", "str", False),
     "mail_subject": ("QR Transaction Analysis Report – Daily Summary", "str", False),
+    # Sending over SMTP bypasses the Outlook client entirely, so the signature
+    # configured there is never applied. This is where it goes instead: HTML,
+    # appended below the body (and below the chart) on every summary email.
+    "mail_signature_html": ("", "str", False),
     # --- SMTP transport ---
     "smtp_host": ("", "str", False),
     "smtp_port": ("587", "int", False),
@@ -108,6 +112,7 @@ def settings_schema() -> list[dict]:
         "mail_to": ("To (comma-separated)", "mail"),
         "mail_cc": ("Cc (comma-separated)", "mail"),
         "mail_subject": ("Default subject", "mail"),
+        "mail_signature_html": ("Signature (HTML)", "mail"),
         "smtp_host": ("SMTP host", "smtp"),
         "smtp_port": ("SMTP port", "smtp"),
         "smtp_username": ("SMTP username", "smtp"),

@@ -56,6 +56,7 @@ export default function SendSummaryOverlay({
         cc: draft.cc,
         body_html: draft.body_html,
         chart_png_base64: draft.chart_png_base64,
+        signature_html: draft.signature_html,
       });
       setSent(r.sent_to);
     } catch (e) {
@@ -190,6 +191,29 @@ export default function SendSummaryOverlay({
                   </p>
                 )}
               </div>
+
+              <label className="text-xs text-neutral-500 space-y-1 block">
+                Signature (HTML)
+                <textarea
+                  className={`${field} font-mono text-xs leading-relaxed`}
+                  rows={4}
+                  value={draft.signature_html}
+                  placeholder="Set a default on the Settings page — your Outlook signature does not apply here."
+                  onChange={(e) => set("signature_html", e.target.value)}
+                />
+              </label>
+
+              {draft.signature_html.trim() && (
+                <div className="border-t border-neutral-200 pt-3">
+                  <p className="text-xs text-neutral-500 mb-2">Signature preview</p>
+                  {/* Our own stored markup, shown so the sender sees exactly
+                      what the recipient will get. */}
+                  <div
+                    className="text-sm text-neutral-800"
+                    dangerouslySetInnerHTML={{ __html: draft.signature_html }}
+                  />
+                </div>
+              )}
 
               {error && <p className="text-red-600 text-xs">{error}</p>}
             </div>

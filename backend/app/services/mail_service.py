@@ -194,6 +194,7 @@ def build_batch_email(batch_id: int) -> dict:
         "cc": settings["mail_cc"],
         "body_html": _default_body_html(batch, stats),
         "chart_png_base64": base64.b64encode(png).decode("ascii") if png else "",
+        "signature_html": settings["mail_signature_html"],
         "stats": stats,
         "smtp_configured": bool(settings["smtp_host"]),
     }
@@ -201,7 +202,7 @@ def build_batch_email(batch_id: int) -> dict:
 
 def send_batch_email(
     *, subject: str, from_addr: str, from_name: str, to: str, cc: str,
-    body_html: str, chart_png_base64: str = "",
+    body_html: str, chart_png_base64: str = "", signature_html: str | None = None,
 ) -> dict:
     """
     Send one composed message. Everything is passed in rather than re-derived,
@@ -249,9 +250,19 @@ def send_batch_email(
             f'style="max-width:100%;height:auto;" /></div>'
         )
 
+    # The signature is appended here rather than baked into the editable body,
+    # so editing the message in the overlay cannot accidentally delete it.
+    # Passing signature_html explicitly (even "") overrides the saved one.
+    sig = settings["mail_signature_html"] if signature_html is None else signature_html
+    sig_html = (
+        f'<div style="margin-top:22px;padding-top:12px;'
+        f'border-top:1px solid #e5e7eb;">{sig}</div>'
+        if (sig or "").strip() else ""
+    )
+
     html = (
         '<div style="font-family:Segoe UI,Calibri,Arial,sans-serif;font-size:14px;'
-        f'color:#111827;line-height:1.5;">{body_html or ""}{chart_html}</div>'
+        f'color:#111827;line-height:1.5;">{body_html or ""}{chart_html}{sig_html}</div>'
     )
     msg.add_alternative(html, subtype="html")
 

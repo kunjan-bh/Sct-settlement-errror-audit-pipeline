@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { FiDownload, FiCheckCircle, FiTrash2, FiRefreshCw } from "react-icons/fi";
+import { FiDownload, FiCheckCircle, FiTrash2, FiRefreshCw, FiMail } from "react-icons/fi";
 import { batchesApi, isIssueDecided, type BatchWithDashboard, type IssueStatusValue, type MidOverride, type PartnerSummary, type Issue } from "../lib/api";
 import { cacheGet, cacheSet, cacheInvalidate } from "../lib/cache";
 import StatCard from "../components/StatCard";
@@ -24,8 +24,9 @@ export default function DashboardPage() {
   const [deleting, setDeleting] = useState(false);
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const [unresolvedCount, setUnresolvedCount] = useState(0);
-  // Shown once the batch is finished, so the summary email is composed from
-  // the final state rather than from whatever was on screen mid-edit.
+  // Opened by the Email Summary button on a finished batch. Deliberately not
+  // fired by Finish itself: the draft is built from the batch's final state,
+  // and ops often wants to adjust notes or statuses before mailing anyone.
   const [showSendSummary, setShowSendSummary] = useState(false);
   const [tab, setTab] = useState<TabKey>("solve");
 
@@ -89,7 +90,6 @@ export default function DashboardPage() {
       await batchesApi.finish(id);
       await load({ force: true });
       window.location.href = batchesApi.getReportUrl(id);
-      setShowSendSummary(true);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Failed to finish batch");
     } finally {
@@ -241,14 +241,24 @@ export default function DashboardPage() {
               {finishing ? "Finishing & Export" : "Finish Batch & Export"}
             </button>
           ) : (
-            <a
-              href={batchesApi.getReportUrl(id)}
-              download
-              className="inline-flex items-center gap-1.5 px-4 py-2 rounded bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-xs transition-colors shadow-sm cursor-pointer"
-            >
-              <FiDownload className="text-sm" />
-              Download Full Report
-            </a>
+            <>
+              <button
+                type="button"
+                onClick={() => setShowSendSummary(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded border border-neutral-300 hover:border-neutral-400 text-neutral-700 text-xs font-semibold transition-colors cursor-pointer"
+              >
+                <FiMail className="text-sm" />
+                Email Summary
+              </button>
+              <a
+                href={batchesApi.getReportUrl(id)}
+                download
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded bg-emerald-700 hover:bg-emerald-800 text-white font-semibold text-xs transition-colors shadow-sm cursor-pointer"
+              >
+                <FiDownload className="text-sm" />
+                Download Full Report
+              </a>
+            </>
           )}
         </div>
       </header>
