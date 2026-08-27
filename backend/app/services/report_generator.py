@@ -1162,32 +1162,63 @@ def write_error_classify_sheet(ws, data: dict) -> None:
         ws.column_dimensions[get_column_letter(col_idx)].width = width
 
 
+def _chart_row_span(height_cm: float) -> int:
+    """
+    How many worksheet rows a chart of this height covers, plus a gutter.
+
+    Excel's default row height is 15pt and 1cm is 28.35pt, so a row is about
+    0.53cm -- roughly 1.9 rows per cm. Charts were previously anchored to the
+    row of the little source table each one reads from, but a 9cm chart spans
+    ~17 rows while those tables sit 3-12 rows apart, so every chart landed on
+    top of the one above it. Charts are now stacked on their own rhythm,
+    independent of where their source data happens to sit.
+    """
+    return int(height_cm * 1.9) + 3
+
+
+# Every chart is anchored in this column, so they line up in one clean strip
+# down the sheet and never collide with the source tables in A-E.
+_CHART_COL = "G"
+_CHART_WIDTH = 17.0
+
+
 def write_error_classify_charts_sheet(ws, data: dict) -> None:
     """
-    Visual version of the Error Classify data for the batch report: a pie
-    chart for the Failed/Pending/Lo Progress split, a stacked bar + cumulative
-    -% line (Pareto) for the worst entities, and a bar chart for the most
-    frequent issue categories. Small tables in columns A-E are kept only as
-    chart source data -- for the full filterable per-category table, use the
-    standalone Error Classify extract (write_error_classify_sheet), which
-    this function deliberately does not replace.
+    Visual version of the Error Classify data for the batch report: the
+    Failed/Pending/Lo Progress split, whose side the errors fall on, a
+    stacked bar + cumulative-% line (Pareto) for the worst entities, and the
+    most frequent issue categories.
+
+    Layout is two columns of the sheet: narrow source tables in A-E (kept
+    only because openpyxl charts must reference cells), and the charts
+    themselves stacked down column G with fixed vertical spacing -- see
+    _chart_row_span.
+
+    For the full filterable per-category table, use the standalone Error
+    Classify extract (write_error_classify_sheet), which this deliberately
+    does not replace.
     """
     batch = data["batch"]
     totals = data["totals"]
     entities = data["entities"]
     categories = data["categories"]
 
-    font_title = Font(name="Calibri", size=14, bold=True, color="1F4E79")
-    font_section = Font(name="Calibri", size=12, bold=True, color="1F4E79")
-    font_header = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    font_title = Font(name="Calibri", size=16, bold=True, color="1F4E79")
+    font_section = Font(name="Calibri", size=11, bold=True, color="1F4E79")
+    font_header = Font(name="Calibri", size=9, bold=True, color="FFFFFF")
     font_bold = Font(name="Calibri", size=10, bold=True)
     font_regular = Font(name="Calibri", size=10)
+    font_muted = Font(name="Calibri", size=9, italic=True, color="808080")
     fill_header = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
+    fill_kpi = PatternFill(start_color="EEF3FA", end_color="EEF3FA", fill_type="solid")
     thin = Side(border_style="thin", color="D9D9D9")
     border_cell = Border(left=thin, right=thin, top=thin, bottom=thin)
     align_left = Alignment(horizontal="left", vertical="center")
     align_right = Alignment(horizontal="right", vertical="center")
     align_center = Alignment(horizontal="center", vertical="center")
+
+    # A chart canvas reads better without the grid behind it.
+    ws.sheet_view.showGridLines = False
 
     ws["A1"] = "Error Classification — Visual Summary"
     ws["A1"].font = font_title
@@ -1197,161 +1228,173 @@ def write_error_classify_charts_sheet(ws, data: dict) -> None:
         "solved issues still count, they still happened. For the full filterable "
         "per-category table, use the standalone Error Classify download."
     )
-    ws["A2"].font = Font(name="Calibri", size=9, italic=True, color="808080")
+    ws["A2"].font = font_muted
 
-    meta = [
-        ("Batch:", batch["name"]),
-        ("Total Error Txns:", totals["total_errors"]),
-        ("Entities Affected:", totals["entities"]),
-        ("Distinct Categories:", totals["categories"]),
-        ("Excluded (reprocessed & settled):", totals.get("retry_resolved", 0)),
+    # ---- KPI strip ----
+    kpis = [
+        ("Batch", batch["name"]),
+        ("Total Error Txns", totals["total_errors"]),
+        ("Entities Affected", totals["entities"]),
+        ("Distinct Categories", totals["categories"]),
+        ("Reprocessed & Settled", totals.get("retry_resolved", 0)),
     ]
     row = 4
-    for label, value in meta:
-        ws.cell(row=row, column=1, value=label).font = font_bold
-        ws.cell(row=row, column=2, value=value).font = font_regular
+    for label, value in kpis:
+        lc = ws.cell(row=row, column=1, value=label)
+        lc.font = font_bold
+        lc.fill = fill_kpi
+        lc.border = border_cell
+        lc.alignment = align_left
+        vc = ws.cell(row=row, column=2, value=value)
+        vc.font = font_regular
+        vc.fill = fill_kpi
+        vc.border = border_cell
+        vc.alignment = align_right
         row += 1
 
     if totals["total_errors"] == 0:
         ws.cell(row=row + 1, column=1, value="No non-success transactions in this batch.").font = font_bold
         return
 
-    # ---- Status distribution: source table + pie chart ----
-    row += 2
-    ws.cell(row=row, column=1, value="Status Distribution").font = font_section
-    row += 1
-    status_header_row = row
-    for col_idx, h in enumerate(["Status", "Count"], start=1):
-        cell = ws.cell(row=row, column=col_idx, value=h)
-        cell.font = font_header
-        cell.fill = fill_header
-        cell.alignment = align_center
-    row += 1
-    status_first_row = row
-    for bucket, label in (("failed", "Failed"), ("pending", "Pending"), ("lo_progress", "Lo Progress")):
-        ws.cell(row=row, column=1, value=label).alignment = align_left
-        ws.cell(row=row, column=2, value=totals["by_status"].get(bucket, 0)).alignment = align_right
-        for c in (1, 2):
-            ws.cell(row=row, column=c).font = font_regular
-            ws.cell(row=row, column=c).border = border_cell
+    total_errors = totals["total_errors"]
+
+    # Charts march down column G on their own rhythm; tables march down A-E on
+    # theirs. The two are deliberately independent.
+    chart_row = 4
+
+    def place(chart, height_cm):
+        """Anchor a chart in the chart column and reserve its vertical space."""
+        nonlocal chart_row
+        chart.height = height_cm
+        chart.width = _CHART_WIDTH
+        chart.style = 10
+        ws.add_chart(chart, f"{_CHART_COL}{chart_row}")
+        chart_row += _chart_row_span(height_cm)
+
+    def write_table(title, headers, rows_data, formats=None):
+        """Small source table in A-E. Returns (header_row, first_row, last_row)."""
+        nonlocal row
+        row += 2
+        ws.cell(row=row, column=1, value=title).font = font_section
+        ws.cell(row=row, column=len(headers), value="chart source").font = font_muted
         row += 1
-    status_last_row = row - 1
+        header_row = row
+        for col_idx, h in enumerate(headers, start=1):
+            cell = ws.cell(row=row, column=col_idx, value=h)
+            cell.font = font_header
+            cell.fill = fill_header
+            cell.alignment = align_center
+            cell.border = border_cell
+        row += 1
+        first_row = row
+        for values in rows_data:
+            for col_idx, value in enumerate(values, start=1):
+                cell = ws.cell(row=row, column=col_idx, value=value)
+                cell.font = font_regular
+                cell.border = border_cell
+                cell.alignment = align_left if col_idx == 1 else align_right
+                if formats and col_idx in formats:
+                    cell.number_format = formats[col_idx]
+            row += 1
+        return header_row, first_row, row - 1
+
+    # ---- 1. Status distribution -> doughnut ----
+    status_rows = [
+        (label, totals["by_status"].get(bucket, 0))
+        for bucket, label in (("failed", "Failed"), ("pending", "Pending"), ("lo_progress", "Lo Progress"))
+    ]
+    s_hdr, s_first, s_last = write_table("Status Distribution", ["Status", "Count"], status_rows)
 
     pie = PieChart()
-    pie.title = "Status Distribution"
-    pie_data = Reference(ws, min_col=2, min_row=status_header_row, max_row=status_last_row)
-    pie_labels = Reference(ws, min_col=1, min_row=status_first_row, max_row=status_last_row)
-    pie.add_data(pie_data, titles_from_data=True)
-    pie.set_categories(pie_labels)
+    pie.title = f"Status Split — {total_errors:,} error transactions"
+    pie.add_data(Reference(ws, min_col=2, min_row=s_hdr, max_row=s_last), titles_from_data=True)
+    pie.set_categories(Reference(ws, min_col=1, min_row=s_first, max_row=s_last))
     pie.dataLabels = DataLabelList()
     pie.dataLabels.showPercent = True
-    pie.height = 8
-    pie.width = 11
-    ws.add_chart(pie, f"G{status_header_row - 1}")
+    place(pie, 8.0)
 
-    # ---- Top entities by error volume: source table + Pareto bar/line ----
-    row += 2
-    entity_section_row = row
-    ws.cell(row=row, column=1, value="Top Entities by Error Volume").font = font_section
-    row += 1
-    entity_header_row = row
-    for col_idx, h in enumerate(["Entity", "Failed", "Pending", "Lo Progress", "Cumulative %"], start=1):
-        cell = ws.cell(row=row, column=col_idx, value=h)
-        cell.font = font_header
-        cell.fill = fill_header
-        cell.alignment = align_center
-    row += 1
-    entity_first_row = row
+    # ---- 2. Which side the errors fall on -> pie ----
+    side_rows = [
+        (SIDE_LABELS.get(side, side), count)
+        for side, count in sorted(totals.get("by_side", {}).items(), key=lambda kv: -kv[1])
+        if count
+    ]
+    if side_rows:
+        sd_hdr, sd_first, sd_last = write_table("Errors by Side", ["Side", "Count"], side_rows)
+        side_pie = PieChart()
+        side_pie.title = "Whose Side — SCT vs Aggregator vs Bank"
+        side_pie.add_data(Reference(ws, min_col=2, min_row=sd_hdr, max_row=sd_last), titles_from_data=True)
+        side_pie.set_categories(Reference(ws, min_col=1, min_row=sd_first, max_row=sd_last))
+        side_pie.dataLabels = DataLabelList()
+        side_pie.dataLabels.showPercent = True
+        place(side_pie, 8.0)
+
+    # ---- 3. Top entities -> stacked bar + cumulative % line (Pareto) ----
     top_entities = entities[:10]
+    entity_rows = []
     running_total = 0
     for ent in top_entities:
         running_total += ent["total"]
-        ws.cell(row=row, column=1, value=ent["entity"]).alignment = align_left
-        ws.cell(row=row, column=2, value=ent["failed"]).alignment = align_right
-        ws.cell(row=row, column=3, value=ent["pending"]).alignment = align_right
-        ws.cell(row=row, column=4, value=ent["lo_progress"]).alignment = align_right
-        cum_cell = ws.cell(row=row, column=5, value=running_total / totals["total_errors"])
-        cum_cell.alignment = align_right
-        cum_cell.number_format = "0%"
-        for c in range(1, 6):
-            ws.cell(row=row, column=c).font = font_regular
-            ws.cell(row=row, column=c).border = border_cell
-        row += 1
-    entity_last_row = row - 1
-
-    if top_entities:
+        entity_rows.append((
+            ent["entity"], ent["failed"], ent["pending"], ent["lo_progress"],
+            running_total / total_errors,
+        ))
+    if entity_rows:
+        e_hdr, e_first, e_last = write_table(
+            "Top Entities by Error Volume",
+            ["Entity", "Failed", "Pending", "Lo Progress", "Cumulative %"],
+            entity_rows,
+            formats={5: "0%"},
+        )
         bar = BarChart()
         bar.type = "col"
         bar.grouping = "stacked"
         bar.overlap = 100
-        bar.title = "Top Entities by Error Volume"
+        bar.title = f"Top {len(top_entities)} Entities by Error Volume (Pareto)"
         bar.y_axis.title = "Transactions"
         bar.x_axis.title = "Entity"
-        cats = Reference(ws, min_col=1, min_row=entity_first_row, max_row=entity_last_row)
+        cats = Reference(ws, min_col=1, min_row=e_first, max_row=e_last)
         for col in (2, 3, 4):
-            bar.add_data(
-                Reference(ws, min_col=col, min_row=entity_header_row, max_row=entity_last_row),
-                titles_from_data=True,
-            )
+            bar.add_data(Reference(ws, min_col=col, min_row=e_hdr, max_row=e_last), titles_from_data=True)
         bar.set_categories(cats)
 
         line = LineChart()
-        line.add_data(
-            Reference(ws, min_col=5, min_row=entity_header_row, max_row=entity_last_row),
-            titles_from_data=True,
-        )
+        line.add_data(Reference(ws, min_col=5, min_row=e_hdr, max_row=e_last), titles_from_data=True)
         line.set_categories(cats)
         line.y_axis.axId = 200
         line.y_axis.title = "Cumulative %"
-
+        line.y_axis.numFmt = "0%"
         bar.y_axis.crosses = "max"
         bar += line
-        bar.height = 9
-        bar.width = 16
-        ws.add_chart(bar, f"G{entity_section_row}")
+        place(bar, 10.0)
 
-    # ---- Top issue categories: source table + bar chart ----
-    row += 2
-    category_section_row = row
-    ws.cell(row=row, column=1, value="Top Issue Categories").font = font_section
-    row += 1
-    category_header_row = row
-    for col_idx, h in enumerate(["Category", "Side", "Count"], start=1):
-        cell = ws.cell(row=row, column=col_idx, value=h)
-        cell.font = font_header
-        cell.fill = fill_header
-        cell.alignment = align_center
-    row += 1
-    category_first_row = row
+    # ---- 4. Top issue categories -> horizontal bar ----
     top_categories = categories[:10]
-    for cat in top_categories:
-        ws.cell(row=row, column=1, value=cat["category"]).alignment = align_left
-        ws.cell(row=row, column=2, value=SIDE_LABELS.get(cat["side"], cat["side"])).alignment = align_left
-        ws.cell(row=row, column=3, value=cat["count"]).alignment = align_right
-        for c in (1, 2, 3):
-            ws.cell(row=row, column=c).font = font_regular
-            ws.cell(row=row, column=c).border = border_cell
-        row += 1
-    category_last_row = row - 1
-
-    if top_categories:
-        cat_bar = BarChart()
-        cat_bar.type = "bar"
-        cat_bar.title = "Top Issue Categories"
-        cat_bar.x_axis.title = "Category"
-        cat_bar.y_axis.title = "Count"
-        cat_bar.add_data(
-            Reference(ws, min_col=3, min_row=category_header_row, max_row=category_last_row),
-            titles_from_data=True,
+    category_rows = [
+        (cat["category"], SIDE_LABELS.get(cat["side"], cat["side"]), cat["count"])
+        for cat in top_categories
+    ]
+    if category_rows:
+        c_hdr, c_first, c_last = write_table(
+            "Top Issue Categories", ["Category", "Side", "Count"], category_rows
         )
-        cat_bar.set_categories(Reference(ws, min_col=1, min_row=category_first_row, max_row=category_last_row))
-        cat_bar.height = 9
-        cat_bar.width = 16
-        ws.add_chart(cat_bar, f"G{category_section_row}")
+        cat_bar = BarChart()
+        cat_bar.type = "bar"  # horizontal: category names are long
+        cat_bar.title = f"Top {len(top_categories)} Issue Categories"
+        cat_bar.y_axis.title = "Transactions"
+        cat_bar.x_axis.title = "Category"
+        cat_bar.add_data(
+            Reference(ws, min_col=3, min_row=c_hdr, max_row=c_last), titles_from_data=True
+        )
+        cat_bar.set_categories(Reference(ws, min_col=1, min_row=c_first, max_row=c_last))
+        cat_bar.dataLabels = DataLabelList()
+        cat_bar.dataLabels.showVal = True
+        cat_bar.legend = None  # single series -- the title already says what it is
+        place(cat_bar, 10.0)
 
-    widths = [30, 14, 14, 14, 14]
-    for col_idx, width in enumerate(widths, start=1):
+    for col_idx, width in enumerate([34, 14, 14, 14, 14], start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = width
+    ws.column_dimensions["F"].width = 3  # gutter between tables and charts
 
 
 def generate_error_classification_bytes(batch_id: int) -> bytes:
