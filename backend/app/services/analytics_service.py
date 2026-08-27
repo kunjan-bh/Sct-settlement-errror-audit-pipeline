@@ -23,7 +23,24 @@ from app.services.status_utils import ISSUE_BUCKETS, normalize_txn_status
 
 BUCKET_CHOICES = ("day", "week", "month")
 
-_EMPTY_ENTITY_COUNTS = {"failed": 0, "pending": 0, "lo_progress": 0, "solved": 0, "unsolved": 0}
+# Ops statuses that close an issue out as done.
+SOLVED_OPS_STATUSES = frozenset({"solved", "success"})
+
+# "exclude" is neither solved nor unsolved -- it is set aside. Ops marking an
+# issue exclude ("not needed", "not ours") is a decision that it will not be
+# worked, so counting it as unsolved understates the resolution rate, but
+# calling it solved would claim work that never happened. It is counted in its
+# own bucket and dropped from the resolution denominator, so a batch that is
+# entirely solved-or-excluded reports 100%.
+#
+# Excluded issues stay in total_errors: the error still happened, per
+# error_classification.py. Exclude changes whether there is work left, not
+# whether it occurred.
+EXCLUDED_OPS_STATUS = "exclude"
+
+_EMPTY_ENTITY_COUNTS = {
+    "failed": 0, "pending": 0, "lo_progress": 0, "solved": 0, "unsolved": 0, "excluded": 0,
+}
 
 
 def _bucket_key(d: date, bucket: str) -> tuple[str, date]:
@@ -50,11 +67,12 @@ def _empty_result(date_from: date, date_to: date, bucket: str) -> dict:
         "range": {"from": date_from.isoformat(), "to": date_to.isoformat(), "bucket": bucket},
         "kpis": {
             "total_transactions": 0, "total_errors": 0, "solved": 0, "unsolved": 0,
+            "excluded": 0,
             "resolution_rate": 0.0, "batches_included": 0,
         },
         "trend": [],
         "status_breakdown": {b: 0 for b in ISSUE_BUCKETS},
-        "resolution_breakdown": {"solved": 0, "unsolved": 0},
+        "resolution_breakdown": {"solved": 0, "unsolved": 0, "excluded": 0},
         "top_entities": [],
         "top_categories": [],
         "available_entities": [],
@@ -77,6 +95,12 @@ def build_analytics(
     Solve tab (which Error Classification/Analytics deliberately still count,
     per error_classification.py's docstring -- an issue someone marked
     exclude still happened).
+
+    solved/unsolved split those errors by whether ops has finished them.
+    Excluded issues are reported separately as `excluded` and belong to
+    neither: they are still in total_errors (they happened) but are left out
+    of the resolution denominator, so resolution_rate = solved / (solved +
+    unsolved) and a batch that is entirely solved-or-excluded reports 100%.
     """
     if bucket not in BUCKET_CHOICES:
         raise ValueError(f"bucket must be one of {BUCKET_CHOICES}")
@@ -121,6 +145,7 @@ def build_analytics(
     total_transactions = 0
     total_errors = 0
     solved = 0
+    excluded = 0
     status_breakdown: dict[str, int] = defaultdict(int)
     trend_buckets: dict[str, dict] = {}
     entity_acc: dict[str, dict] = {}
@@ -164,8 +189,11 @@ def build_analytics(
         eff_status = (override_obj["status"] if override_obj else None) or (
             issue_obj.status if issue_obj else "pending"
         )
-        is_solved = eff_status == "solved"
-        if is_solved:
+        is_excluded = eff_status == EXCLUDED_OPS_STATUS
+        is_solved = eff_status in SOLVED_OPS_STATUSES
+        if is_excluded:
+            excluded += 1
+        elif is_solved:
             solved += 1
 
         # --- trend bucket (keyed by the batch's date, not per-row) ---
@@ -173,12 +201,12 @@ def build_analytics(
         key, bucket_start = _bucket_key(d, bucket)
         tb = trend_buckets.setdefault(key, {
             "bucket_start": bucket_start, "total": 0, "failed": 0, "pending": 0,
-            "lo_progress": 0, "solved": 0, "unsolved": 0,
+            "lo_progress": 0, "solved": 0, "unsolved": 0, "excluded": 0,
         })
         tb["total"] += 1
         if txn_status in tb:
             tb[txn_status] += 1
-        tb["solved" if is_solved else "unsolved"] += 1
+        tb["excluded" if is_excluded else ("solved" if is_solved else "unsolved")] += 1
 
         # --- top entities ---
         ea = entity_acc.setdefault(entity, {
@@ -187,7 +215,7 @@ def build_analytics(
         ea["total"] += 1
         if txn_status in ea:
             ea[txn_status] += 1
-        ea["solved" if is_solved else "unsolved"] += 1
+        ea["excluded" if is_excluded else ("solved" if is_solved else "unsolved")] += 1
 
         # --- top categories ---
         cat_key = (category, side)
@@ -204,6 +232,7 @@ def build_analytics(
             "lo_progress": trend_buckets[k]["lo_progress"],
             "solved": trend_buckets[k]["solved"],
             "unsolved": trend_buckets[k]["unsolved"],
+            "excluded": trend_buckets[k]["excluded"],
         }
         for k in sorted(trend_buckets.keys())
     ]
@@ -214,8 +243,11 @@ def build_analytics(
     for c in top_categories:
         c["share_of_batch"] = round(c["count"] * 100.0 / total_errors, 2) if total_errors else 0.0
 
-    unsolved = total_errors - solved
-    resolution_rate = round(solved * 100.0 / total_errors, 2) if total_errors else 0.0
+    # Excluded issues sit outside the split entirely -- neither worked nor
+    # outstanding -- so they are not in `unsolved` and not in the denominator.
+    unsolved = total_errors - solved - excluded
+    decidable = solved + unsolved
+    resolution_rate = round(solved * 100.0 / decidable, 2) if decidable else 0.0
 
     return {
         "range": {"from": date_from.isoformat(), "to": date_to.isoformat(), "bucket": bucket},
@@ -224,12 +256,13 @@ def build_analytics(
             "total_errors": total_errors,
             "solved": solved,
             "unsolved": unsolved,
+            "excluded": excluded,
             "resolution_rate": resolution_rate,
             "batches_included": len(batch_ids),
         },
         "trend": trend,
         "status_breakdown": {b: status_breakdown.get(b, 0) for b in ISSUE_BUCKETS},
-        "resolution_breakdown": {"solved": solved, "unsolved": unsolved},
+        "resolution_breakdown": {"solved": solved, "unsolved": unsolved, "excluded": excluded},
         "top_entities": top_entities,
         "top_categories": top_categories,
         "available_entities": [

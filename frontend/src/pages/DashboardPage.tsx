@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { FiDownload, FiCheckCircle, FiTrash2, FiRefreshCw } from "react-icons/fi";
-import { batchesApi, type BatchWithDashboard, type IssueStatusValue, type MidOverride, type PartnerSummary, type Issue } from "../lib/api";
+import { batchesApi, isIssueDecided, type BatchWithDashboard, type IssueStatusValue, type MidOverride, type PartnerSummary, type Issue } from "../lib/api";
 import { cacheGet, cacheSet, cacheInvalidate } from "../lib/cache";
 import StatCard from "../components/StatCard";
 import IssueTable, { type FlatIssueRow } from "../components/IssueTable";
@@ -96,7 +96,10 @@ export default function DashboardPage() {
     });
     allIssues.push(...data.dashboard.sct_summary.issues_failed, ...data.dashboard.sct_summary.issues_pending, ...data.dashboard.sct_summary.issues_lo_progress);
 
-    const unresolved = allIssues.filter(issue => issue.status !== "solved").length;
+    // An excluded issue is a decision, not unfinished work -- counting it
+    // here told ops "8 issues are not solved" on a batch they had fully
+    // worked through.
+    const unresolved = allIssues.filter(issue => !isIssueDecided(issue.status)).length;
 
     if (unresolved > 0) {
       setUnresolvedCount(unresolved);

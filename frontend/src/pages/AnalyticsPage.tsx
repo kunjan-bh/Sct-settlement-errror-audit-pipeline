@@ -34,7 +34,7 @@ import StatCard from "../components/StatCard";
  */
 
 const STATUS_COLORS = { failed: "#dc2626", pending: "#d97706", lo_progress: "#2563eb" };
-const RESOLUTION_COLORS = { solved: "#16a34a", unsolved: "#a8a29e" };
+const RESOLUTION_COLORS = { solved: "#16a34a", unsolved: "#a8a29e", excluded: "#d6d3d1" };
 const ENTITY_COLOR = "#2a78d6";
 const CATEGORY_COLOR = "#eb6834";
 
@@ -172,6 +172,9 @@ export default function AnalyticsPage() {
       inner: [
         { name: "Solved", value: r.solved, color: RESOLUTION_COLORS.solved },
         { name: "Unsolved", value: r.unsolved, color: RESOLUTION_COLORS.unsolved },
+        // Shown so the ring still adds up to every error, but it sits outside
+        // the resolution rate -- excluded is neither worked nor outstanding.
+        { name: "Excluded", value: r.excluded, color: RESOLUTION_COLORS.excluded },
       ].filter((d) => d.value > 0),
     };
   }, [data]);

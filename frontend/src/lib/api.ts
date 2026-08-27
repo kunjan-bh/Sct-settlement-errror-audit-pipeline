@@ -36,6 +36,27 @@ export type Batch = {
 
 export type IssueStatusValue = "pending" | "in_progress" | "solved" | "exclude" | "lo_progress" | "success";
 
+/**
+ * Statuses that mean ops has decided what happens to an issue, so it is not
+ * outstanding work. "exclude" is a deliberate "not needed" and "success" is an
+ * affirmative outcome -- neither should be reported as unsolved when finishing
+ * a batch. Only pending / in_progress / lo_progress are still open.
+ *
+ * Deliberately NOT used by Analytics or Error Classification: those count an
+ * excluded issue on purpose, because it still happened (see
+ * analytics_service.build_analytics). This is about outstanding work, not
+ * about what occurred.
+ */
+const DECIDED_ISSUE_STATUSES: ReadonlySet<IssueStatusValue> = new Set<IssueStatusValue>([
+  "solved",
+  "exclude",
+  "success",
+]);
+
+export function isIssueDecided(status: IssueStatusValue): boolean {
+  return DECIDED_ISSUE_STATUSES.has(status);
+}
+
 export type MidOverride = { status: IssueStatusValue; remark?: string };
 
 export type Issue = {
@@ -171,6 +192,8 @@ export type AnalyticsTrendPoint = {
   lo_progress: number;
   solved: number;
   unsolved: number;
+  /** Set aside by ops — neither worked nor outstanding, and outside the resolution rate. */
+  excluded: number;
 };
 
 export type AnalyticsEntity = {
@@ -182,6 +205,7 @@ export type AnalyticsEntity = {
   lo_progress: number;
   solved: number;
   unsolved: number;
+  excluded: number;
 };
 
 /** Every entity seen in the range, regardless of the current exclude filter — used to populate the exclude picker so toggling one back on is always possible. */
@@ -201,12 +225,14 @@ export type AnalyticsData = {
     total_errors: number;
     solved: number;
     unsolved: number;
+    excluded: number;
+    /** solved / (solved + unsolved) — excluded issues are not in the denominator. */
     resolution_rate: number;
     batches_included: number;
   };
   trend: AnalyticsTrendPoint[];
   status_breakdown: { failed: number; pending: number; lo_progress: number };
-  resolution_breakdown: { solved: number; unsolved: number };
+  resolution_breakdown: { solved: number; unsolved: number; excluded: number };
   top_entities: AnalyticsEntity[];
   top_categories: AnalyticsCategory[];
   available_entities: AnalyticsAvailableEntity[];
