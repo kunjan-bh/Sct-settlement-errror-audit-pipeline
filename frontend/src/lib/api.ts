@@ -192,8 +192,6 @@ export type AnalyticsTrendPoint = {
   lo_progress: number;
   solved: number;
   unsolved: number;
-  /** Set aside by ops — neither worked nor outstanding, and outside the resolution rate. */
-  excluded: number;
 };
 
 export type AnalyticsEntity = {
@@ -205,7 +203,6 @@ export type AnalyticsEntity = {
   lo_progress: number;
   solved: number;
   unsolved: number;
-  excluded: number;
 };
 
 /** Every entity seen in the range, regardless of the current exclude filter — used to populate the exclude picker so toggling one back on is always possible. */
@@ -225,8 +222,10 @@ export type AnalyticsData = {
     total_errors: number;
     solved: number;
     unsolved: number;
+    /** Issues ops set aside. Counted here only — they are not in total_errors,
+     *  the status split, the trend, the entities or the categories. */
     excluded: number;
-    /** solved / (solved + unsolved) — excluded issues are not in the denominator. */
+    /** solved / total_errors, where total_errors already omits excluded. */
     resolution_rate: number;
     batches_included: number;
   };

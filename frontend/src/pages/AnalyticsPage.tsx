@@ -363,8 +363,8 @@ export default function AnalyticsPage() {
                 <section className="bg-white border border-neutral-200 rounded-lg p-5 shadow-sm">
                   <h2 className="text-sm font-semibold text-neutral-900 mb-1">Errors &amp; Resolution</h2>
                   <p className="text-xs text-neutral-500 mb-4">
-                    Outer ring: what kind of error. Inner ring: of the errors still in play,
-                    how much got solved — excluded issues are left out.
+                    Outer ring: what kind of error. Inner ring: how much of it got solved.
+                    Issues you excluded are left out of both.
                   </p>
                   {data.kpis.total_errors === 0 ? (
                     <p className="text-neutral-400 text-sm py-16 text-center">

@@ -26,21 +26,14 @@ BUCKET_CHOICES = ("day", "week", "month")
 # Ops statuses that close an issue out as done.
 SOLVED_OPS_STATUSES = frozenset({"solved", "success"})
 
-# "exclude" is neither solved nor unsolved -- it is set aside. Ops marking an
-# issue exclude ("not needed", "not ours") is a decision that it will not be
-# worked, so counting it as unsolved understates the resolution rate, but
-# calling it solved would claim work that never happened. It is counted in its
-# own bucket and dropped from the resolution denominator, so a batch that is
-# entirely solved-or-excluded reports 100%.
-#
-# Excluded issues stay in total_errors: the error still happened, per
-# error_classification.py. Exclude changes whether there is work left, not
-# whether it occurred.
+# "exclude" is neither solved nor unsolved -- it is set aside. Counting it as
+# unsolved understates the resolution rate; calling it solved would claim work
+# that never happened. Analytics therefore drops these rows entirely and only
+# reports how many there were, so every other number describes one coherent
+# population.
 EXCLUDED_OPS_STATUS = "exclude"
 
-_EMPTY_ENTITY_COUNTS = {
-    "failed": 0, "pending": 0, "lo_progress": 0, "solved": 0, "unsolved": 0, "excluded": 0,
-}
+_EMPTY_ENTITY_COUNTS = {"failed": 0, "pending": 0, "lo_progress": 0, "solved": 0, "unsolved": 0}
 
 
 def _bucket_key(d: date, bucket: str) -> tuple[str, date]:
@@ -96,11 +89,17 @@ def build_analytics(
     per error_classification.py's docstring -- an issue someone marked
     exclude still happened).
 
-    solved/unsolved split those errors by whether ops has finished them.
-    Excluded issues are reported separately as `excluded` and belong to
-    neither: they are still in total_errors (they happened) but are left out
-    of the resolution denominator, so resolution_rate = solved / (solved +
-    unsolved) and a batch that is entirely solved-or-excluded reports 100%.
+    Issues ops marked "exclude" are dropped from every number here except
+    the standalone `excluded` tally: not in total_errors, the status split,
+    the trend, the entities or the categories. Analytics answers "what is
+    left and how much of it did we finish", and a set-aside issue is neither.
+    That keeps the two splits over one population, so
+    solved + unsolved == total_errors == failed + pending + lo_progress, and
+    a batch that is entirely solved-or-excluded reports 100%.
+
+    This is the one place that drops them: Error Classification still counts
+    excluded issues, because it answers "what broke", and an issue someone
+    excluded still broke.
     """
     if bucket not in BUCKET_CHOICES:
         raise ValueError(f"bucket must be one of {BUCKET_CHOICES}")
@@ -169,9 +168,6 @@ def build_analytics(
         if txn_status == "success":
             continue
 
-        total_errors += 1
-        status_breakdown[txn_status] += 1
-
         side = row.error_side or "unknown"
         category = row.error_category or "Unclassified"
 
@@ -189,24 +185,35 @@ def build_analytics(
         eff_status = (override_obj["status"] if override_obj else None) or (
             issue_obj.status if issue_obj else "pending"
         )
-        is_excluded = eff_status == EXCLUDED_OPS_STATUS
-        is_solved = eff_status in SOLVED_OPS_STATUSES
-        if is_excluded:
+
+        # Ops set this one aside, so it leaves Analytics entirely -- it is not
+        # in total_errors, the status split, the trend, the entities or the
+        # categories. Counting it in the status split while hiding it from the
+        # resolution split left the two describing different populations, so
+        # solved + unsolved no longer equalled failed + pending + lo progress.
+        # It is still tallied as `excluded` so the number is reportable.
+        if eff_status == EXCLUDED_OPS_STATUS:
             excluded += 1
-        elif is_solved:
+            continue
+
+        is_solved = eff_status in SOLVED_OPS_STATUSES
+        if is_solved:
             solved += 1
+
+        total_errors += 1
+        status_breakdown[txn_status] += 1
 
         # --- trend bucket (keyed by the batch's date, not per-row) ---
         d = batch_date[row.batch_id]
         key, bucket_start = _bucket_key(d, bucket)
         tb = trend_buckets.setdefault(key, {
             "bucket_start": bucket_start, "total": 0, "failed": 0, "pending": 0,
-            "lo_progress": 0, "solved": 0, "unsolved": 0, "excluded": 0,
+            "lo_progress": 0, "solved": 0, "unsolved": 0,
         })
         tb["total"] += 1
         if txn_status in tb:
             tb[txn_status] += 1
-        tb["excluded" if is_excluded else ("solved" if is_solved else "unsolved")] += 1
+        tb["solved" if is_solved else "unsolved"] += 1
 
         # --- top entities ---
         ea = entity_acc.setdefault(entity, {
@@ -215,7 +222,7 @@ def build_analytics(
         ea["total"] += 1
         if txn_status in ea:
             ea[txn_status] += 1
-        ea["excluded" if is_excluded else ("solved" if is_solved else "unsolved")] += 1
+        ea["solved" if is_solved else "unsolved"] += 1
 
         # --- top categories ---
         cat_key = (category, side)
@@ -232,7 +239,6 @@ def build_analytics(
             "lo_progress": trend_buckets[k]["lo_progress"],
             "solved": trend_buckets[k]["solved"],
             "unsolved": trend_buckets[k]["unsolved"],
-            "excluded": trend_buckets[k]["excluded"],
         }
         for k in sorted(trend_buckets.keys())
     ]
@@ -243,11 +249,11 @@ def build_analytics(
     for c in top_categories:
         c["share_of_batch"] = round(c["count"] * 100.0 / total_errors, 2) if total_errors else 0.0
 
-    # Excluded issues sit outside the split entirely -- neither worked nor
-    # outstanding -- so they are not in `unsolved` and not in the denominator.
-    unsolved = total_errors - solved - excluded
-    decidable = solved + unsolved
-    resolution_rate = round(solved * 100.0 / decidable, 2) if decidable else 0.0
+    # total_errors already excludes the set-aside rows, so this is a clean
+    # two-way split: solved + unsolved == total_errors == failed + pending +
+    # lo_progress.
+    unsolved = total_errors - solved
+    resolution_rate = round(solved * 100.0 / total_errors, 2) if total_errors else 0.0
 
     return {
         "range": {"from": date_from.isoformat(), "to": date_to.isoformat(), "bucket": bucket},
