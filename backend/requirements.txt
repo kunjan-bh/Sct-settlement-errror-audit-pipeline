@@ -5,3 +5,6 @@ pandas>=3.0.3
 openpyxl==3.1.5
 python-dotenv==1.0.1
 numpy>=2.5.1
+# Headless (Agg) rendering of the Errors & Resolution ring embedded in the
+# end-of-batch summary email -- see services/chart_image.py.
+matplotlib>=3.9

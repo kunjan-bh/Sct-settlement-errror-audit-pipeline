@@ -363,6 +363,75 @@ export const settlementTypeApi = {
   },
 };
 
+// ── Settings & batch summary email ───────────────────────────────────────
+// Operator-editable mail/SMTP config, and the end-of-batch summary email it
+// drives. See backend/app/services/settings_service.py and mail_service.py.
+
+export type SettingField = {
+  key: string;
+  label: string;
+  group: "mail" | "smtp";
+  type: "str" | "int" | "bool";
+  secret: boolean;
+  default: string;
+};
+
+export type SettingsPayload = {
+  values: Record<string, string | number | boolean>;
+  schema: SettingField[];
+};
+
+/** Sent in place of a stored secret; echo it back unchanged to leave it alone. */
+export const SECRET_MASK = "••••••••";
+
+export const settingsApi = {
+  get: () => request<SettingsPayload>("/settings"),
+
+  save: (values: Record<string, string | number | boolean>) =>
+    request<SettingsPayload>("/settings", { method: "PUT", body: JSON.stringify(values) }),
+
+  sendTest: (to?: string) =>
+    request<{ sent_to: string[] }>("/settings/test-email", {
+      method: "POST",
+      body: JSON.stringify(to ? { to } : {}),
+    }),
+};
+
+export type BatchEmailStats = {
+  total_transactions: number;
+  total_errors: number;
+  status_breakdown: { failed: number; pending: number; lo_progress: number };
+  resolution: { solved: number; unsolved: number };
+  excluded: number;
+  retry_resolved: number;
+  resolution_rate: number;
+};
+
+/** The editable draft shown in the send-summary overlay. */
+export type BatchEmailDraft = {
+  batch: Batch;
+  subject: string;
+  from_addr: string;
+  from_name: string;
+  to: string;
+  cc: string;
+  body_html: string;
+  /** Base64 PNG of the Errors & Resolution ring, embedded inline on send. */
+  chart_png_base64: string;
+  stats: BatchEmailStats;
+  smtp_configured: boolean;
+};
+
+export const batchEmailApi = {
+  preview: (batchId: number) => request<BatchEmailDraft>(`/batches/${batchId}/email-preview`),
+
+  send: (batchId: number, draft: Omit<BatchEmailDraft, "batch" | "stats" | "smtp_configured">) =>
+    request<{ sent_to: string[]; cc: string[]; subject: string }>(
+      `/batches/${batchId}/send-email`,
+      { method: "POST", body: JSON.stringify(draft) }
+    ),
+};
+
 export const batchesApi = {
   upload: async (file: File): Promise<BatchWithDashboard> => {
     const formData = new FormData();

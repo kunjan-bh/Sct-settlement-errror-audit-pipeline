@@ -16,6 +16,7 @@ from app.models.issue_status import IssueStatus
 from app.services.excel_ingest import ingest_excel
 from app.services.dashboard_service import build_dashboard
 from app.services.error_classification import build_error_classification
+from app.services.mail_service import MailError, build_batch_email, send_batch_email
 from app.services.report_generator import (
     generate_aggregator_report_bytes,
     generate_error_classification_bytes,
@@ -105,6 +106,43 @@ def finish_batch(batch_id):
     batch.finished_at = datetime.utcnow()
     db.session.commit()
     return jsonify(batch.to_dict())
+
+
+@batches_bp.get("/<int:batch_id>/email-preview")
+def batch_email_preview(batch_id):
+    """
+    The draft summary email for this batch -- addresses and subject from
+    settings, body from the batch notes, and the Errors & Resolution ring as a
+    base64 PNG. Nothing is sent here; the frontend shows this in an editable
+    overlay and posts the edited version back to /send-email.
+    """
+    return jsonify(build_batch_email(batch_id))
+
+
+@batches_bp.post("/<int:batch_id>/send-email")
+def batch_send_email(batch_id):
+    """
+    Sends exactly what the preview overlay was showing -- subject, addresses,
+    body and chart all come from the request, so an edit in the overlay is
+    what actually goes out.
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = send_batch_email(
+            subject=payload.get("subject", ""),
+            from_addr=payload.get("from_addr", ""),
+            from_name=payload.get("from_name", ""),
+            to=payload.get("to", ""),
+            cc=payload.get("cc", ""),
+            body_html=payload.get("body_html", ""),
+            chart_png_base64=payload.get("chart_png_base64", ""),
+        )
+    except MailError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        current_app.logger.exception("Batch summary email failed")
+        return jsonify({"error": f"Unexpected error sending email: {e}"}), 500
+    return jsonify(result)
 
 
 @batches_bp.get("/<int:batch_id>/report")

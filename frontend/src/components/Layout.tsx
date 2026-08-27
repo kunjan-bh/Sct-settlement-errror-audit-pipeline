@@ -14,6 +14,7 @@ const settlementItems = [
 const topLevelItems = [
   { to: "/partner-mapping", label: "Partner Mapping" },
   { to: "/settlement-type", label: "Settlement Type Report" },
+  { to: "/settings", label: "Settings" },
 ];
 
 // Center-anchored underline that grows in on hover -- shared by every nav

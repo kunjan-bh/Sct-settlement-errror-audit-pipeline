@@ -6,6 +6,7 @@ import BatchListPage from "./pages/BatchListPage";
 import PartnerMappingPage from "./pages/PartnerMappingPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import SettlementTypePage from "./pages/SettlementTypePage";
+import SettingsPage from "./pages/SettingsPage";
 
 function App() {
   return (
@@ -19,6 +20,7 @@ function App() {
           <Route path="/partner-mapping" element={<PartnerMappingPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/settlement-type" element={<SettlementTypePage />} />
+          <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

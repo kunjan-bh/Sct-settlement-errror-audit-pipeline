@@ -4,6 +4,7 @@ import { FiDownload, FiCheckCircle, FiTrash2, FiRefreshCw } from "react-icons/fi
 import { batchesApi, isIssueDecided, type BatchWithDashboard, type IssueStatusValue, type MidOverride, type PartnerSummary, type Issue } from "../lib/api";
 import { cacheGet, cacheSet, cacheInvalidate } from "../lib/cache";
 import StatCard from "../components/StatCard";
+import SendSummaryOverlay from "../components/SendSummaryOverlay";
 import IssueTable, { type FlatIssueRow } from "../components/IssueTable";
 import ErrorClassification from "../components/ErrorClassification";
 
@@ -23,6 +24,9 @@ export default function DashboardPage() {
   const [deleting, setDeleting] = useState(false);
   const [showFinishConfirm, setShowFinishConfirm] = useState(false);
   const [unresolvedCount, setUnresolvedCount] = useState(0);
+  // Shown once the batch is finished, so the summary email is composed from
+  // the final state rather than from whatever was on screen mid-edit.
+  const [showSendSummary, setShowSendSummary] = useState(false);
   const [tab, setTab] = useState<TabKey>("solve");
 
   const cacheKey = `batch:${id}`;
@@ -75,9 +79,17 @@ export default function DashboardPage() {
     setShowFinishConfirm(false);
     setFinishing(true);
     try {
+      // The summary email body is built from the batch notes, so flush any
+      // unsaved edit first -- finishing straight from a focused textarea would
+      // otherwise mail the previously saved version.
+      if (data && notes !== (data.batch.notes ?? "")) {
+        await batchesApi.updateNotes(id, notes);
+        cacheInvalidate(cacheKey);
+      }
       await batchesApi.finish(id);
       await load({ force: true });
       window.location.href = batchesApi.getReportUrl(id);
+      setShowSendSummary(true);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Failed to finish batch");
     } finally {
@@ -385,6 +397,10 @@ export default function DashboardPage() {
             </div>
           </div>
         </div>
+      )}
+
+      {showSendSummary && (
+        <SendSummaryOverlay batchId={id} onClose={() => setShowSendSummary(false)} />
       )}
     </div>
   );
