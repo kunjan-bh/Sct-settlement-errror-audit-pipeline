@@ -34,7 +34,7 @@ import StatCard from "../components/StatCard";
  */
 
 const STATUS_COLORS = { failed: "#dc2626", pending: "#d97706", lo_progress: "#2563eb" };
-const RESOLUTION_COLORS = { solved: "#16a34a", unsolved: "#a8a29e", excluded: "#d6d3d1" };
+const RESOLUTION_COLORS = { solved: "#16a34a", unsolved: "#a8a29e" };
 const ENTITY_COLOR = "#2a78d6";
 const CATEGORY_COLOR = "#eb6834";
 
@@ -170,11 +170,12 @@ export default function AnalyticsPage() {
         { name: "Lo Progress", value: s.lo_progress, color: STATUS_COLORS.lo_progress },
       ].filter((d) => d.value > 0),
       inner: [
+        // Excluded issues are deliberately absent: ops set them aside, so they
+        // are neither solved nor outstanding and are not shown here. That means
+        // the inner ring covers only the errors still in play, not every error
+        // in the outer ring.
         { name: "Solved", value: r.solved, color: RESOLUTION_COLORS.solved },
         { name: "Unsolved", value: r.unsolved, color: RESOLUTION_COLORS.unsolved },
-        // Shown so the ring still adds up to every error, but it sits outside
-        // the resolution rate -- excluded is neither worked nor outstanding.
-        { name: "Excluded", value: r.excluded, color: RESOLUTION_COLORS.excluded },
       ].filter((d) => d.value > 0),
     };
   }, [data]);
@@ -362,7 +363,8 @@ export default function AnalyticsPage() {
                 <section className="bg-white border border-neutral-200 rounded-lg p-5 shadow-sm">
                   <h2 className="text-sm font-semibold text-neutral-900 mb-1">Errors &amp; Resolution</h2>
                   <p className="text-xs text-neutral-500 mb-4">
-                    Outer ring: what kind of error. Inner ring: how much of it got solved.
+                    Outer ring: what kind of error. Inner ring: of the errors still in play,
+                    how much got solved — excluded issues are left out.
                   </p>
                   {data.kpis.total_errors === 0 ? (
                     <p className="text-neutral-400 text-sm py-16 text-center">
