@@ -229,7 +229,7 @@ export default function SendSummaryOverlay({
                 />
               </label>
 
-              {draft.signature_html.trim() && (
+              {(draft.signature_html.trim() || draft.signature_logo_base64) && (
                 <div className="border-t border-neutral-200 pt-3">
                   <p className="text-xs text-neutral-500 mb-2">Signature preview</p>
                   {/* Our own stored markup, shown so the sender sees exactly
@@ -238,6 +238,13 @@ export default function SendSummaryOverlay({
                     className="text-sm text-neutral-800"
                     dangerouslySetInnerHTML={{ __html: draft.signature_html }}
                   />
+                  {draft.signature_logo_base64 && (
+                    <img
+                      src={`data:image/png;base64,${draft.signature_logo_base64}`}
+                      alt="Signature logo"
+                      className="mt-2.5"
+                    />
+                  )}
                 </div>
               )}
 

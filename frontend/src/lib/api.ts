@@ -425,6 +425,9 @@ export type BatchEmailDraft = {
    *  Full Report produces. Built at send time, not for the preview. */
   attach_report: boolean;
   report_filename: string;
+  /** Base64 logo shown under the signature, embedded inline on send. Empty
+   *  unless MAIL_SIGNATURE_LOGO points at a real file. */
+  signature_logo_base64: string;
   stats: BatchEmailStats;
   smtp_configured: boolean;
 };
@@ -434,9 +437,12 @@ export const batchEmailApi = {
 
   send: (
     batchId: number,
-    draft: Omit<BatchEmailDraft, "batch" | "stats" | "smtp_configured" | "report_filename"> & {
-      batch_name?: string;
-    }
+    // The logo is read from disk by the server (MAIL_SIGNATURE_LOGO), so it is
+    // preview-only and deliberately not round-tripped through the browser.
+    draft: Omit<
+      BatchEmailDraft,
+      "batch" | "stats" | "smtp_configured" | "report_filename" | "signature_logo_base64"
+    > & { batch_name?: string }
   ) =>
     request<{
       sent_to: string[];

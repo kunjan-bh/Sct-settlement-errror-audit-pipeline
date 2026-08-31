@@ -38,17 +38,18 @@ _ENV_KEYS = {
 }
 
 # The signature is assembled from parts rather than pasted as HTML, so the
-# same block can be edited field by field in .env. Order is the order it
-# renders. See _signature_from_env.
-_SIGNATURE_ENV = [
-    ("MAIL_SIGNATURE_NAME", "", "bold"),
-    ("MAIL_SIGNATURE_TITLE", "", "plain"),
-    ("MAIL_SIGNATURE_COMPANY", "", "plain"),
-    ("MAIL_SIGNATURE_PHONE", "Mobile: ", "plain"),
-    ("MAIL_SIGNATURE_TOLL_FREE", "Toll Free: ", "plain"),
-    ("MAIL_SIGNATURE_ADDRESS", "", "muted"),
-    ("MAIL_SIGNATURE_WEBSITE", "", "link"),
-]
+# same block can be edited field by field in .env. The layout below mirrors
+# the standard SCT block exactly -- see _signature_from_env:
+#
+#     Regards,
+#     Kunjan Bhatta                                  (bold)
+#     Tech Operation Department                      (bold)
+#     Mobile: 9768785577
+#     Smart Choice Technologies Ltd. (SCT)
+#     5th Floor, RS Sadan, Panipokhari, Kathmandu, Nepal
+#     Toll Free: 1660-0144155 | www.sct.com.np       (site is a link)
+#     [logo]
+_SIGNATURE_CLOSING = "Regards,"
 
 # key -> (default, type, secret?)
 #   type is one of "str" | "int" | "bool"
@@ -96,34 +97,78 @@ def _escape(text) -> str:
 
 def _signature_from_env() -> str:
     """
-    Build the signature HTML from the MAIL_SIGNATURE_* variables.
+    Build the signature HTML from the MAIL_SIGNATURE_* variables, in the
+    standard SCT layout (see _SIGNATURE_CLOSING above).
 
     Used when no signature has been saved on the Settings page, so the common
     case is "fill in .env once and never touch the UI". Any part left unset is
-    simply skipped, so a signature with no toll-free number renders without a
-    blank line where it would have been.
-    """
-    lines = []
-    for env_key, prefix, style in _SIGNATURE_ENV:
-        value = (os.environ.get(env_key) or "").strip()
-        if not value:
-            continue
-        text = _escape(f"{prefix}{value}")
-        if style == "bold":
-            lines.append(f'<div style="font-weight:600;color:#111827;">{text}</div>')
-        elif style == "muted":
-            lines.append(f'<div style="color:#6b7280;font-size:12px;">{text}</div>')
-        elif style == "link":
-            url = value if value.startswith(("http://", "https://")) else f"https://{value}"
-            lines.append(
-                f'<div><a href="{_escape(url)}" style="color:#2563eb;">{text}</a></div>'
-            )
-        else:
-            lines.append(f'<div style="color:#374151;">{text}</div>')
+    skipped rather than rendered as a blank line -- a signature with no
+    toll-free number closes up instead of leaving a gap.
 
-    if not lines:
+    The logo is NOT here: it has to be attached to the message and referenced
+    by Content-ID, which only the sender knows. mail_service appends it.
+    """
+    def env(key):
+        return (os.environ.get(key) or "").strip()
+
+    name, title = env("MAIL_SIGNATURE_NAME"), env("MAIL_SIGNATURE_TITLE")
+    phone, company = env("MAIL_SIGNATURE_PHONE"), env("MAIL_SIGNATURE_COMPANY")
+    address, toll_free = env("MAIL_SIGNATURE_ADDRESS"), env("MAIL_SIGNATURE_TOLL_FREE")
+    website = env("MAIL_SIGNATURE_WEBSITE")
+
+    if not any((name, title, phone, company, address, toll_free, website)):
         return ""
-    return '<div style="font-size:13px;line-height:1.45;">' + "".join(lines) + "</div>"
+
+    bold = "font-weight:700;color:#000000;"
+    plain = "color:#000000;"
+    lines = [f'<div style="{plain}">{_escape(_SIGNATURE_CLOSING)}</div>']
+
+    if name:
+        lines.append(f'<div style="{bold}">{_escape(name)}</div>')
+    if title:
+        lines.append(f'<div style="{bold}">{_escape(title)}</div>')
+    if phone:
+        lines.append(f'<div style="{plain}">Mobile: {_escape(phone)}</div>')
+    if company:
+        lines.append(f'<div style="{plain}">{_escape(company)}</div>')
+    if address:
+        lines.append(f'<div style="{plain}">{_escape(address)}</div>')
+
+    # Toll free and website share the last line, separated by a pipe, with the
+    # site as the only link in the block.
+    tail = []
+    if toll_free:
+        tail.append(f"Toll Free: {_escape(toll_free)}")
+    if website:
+        url = website if website.startswith(("http://", "https://")) else f"https://{website}"
+        tail.append(
+            f'<a href="{_escape(url)}" style="color:#1155cc;text-decoration:underline;">'
+            f"{_escape(website)}</a>"
+        )
+    if tail:
+        lines.append(f'<div style="{plain}">' + " | ".join(tail) + "</div>")
+
+    return (
+        '<div style="font-family:Calibri,Segoe UI,Arial,sans-serif;'
+        'font-size:14px;line-height:1.4;">' + "".join(lines) + "</div>"
+    )
+
+
+# Shipped with the app so the signature works on a fresh checkout with no
+# configuration. MAIL_SIGNATURE_LOGO overrides it; pointing that at a file
+# that does not exist falls back here rather than silently dropping the logo.
+_BUNDLED_LOGO = os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "signature_logo.png")
+
+
+def signature_logo_path() -> str:
+    """Path to the signature logo image, or "" if there is none to use.
+    Existence is checked here so a stale override degrades to the bundled
+    logo, and a missing bundle degrades to no logo, rather than breaking a
+    send that is otherwise fine."""
+    raw = (os.environ.get("MAIL_SIGNATURE_LOGO") or "").strip()
+    if raw and os.path.isfile(raw):
+        return raw
+    return _BUNDLED_LOGO if os.path.isfile(_BUNDLED_LOGO) else ""
 
 
 def _default_for(key: str, default):

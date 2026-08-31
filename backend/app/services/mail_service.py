@@ -14,6 +14,7 @@ from us. The full Excel report rides along as a normal attachment -- the
 picture is the summary, the workbook is the evidence behind it.
 """
 import base64
+import os
 import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
@@ -24,7 +25,7 @@ from app.models.issue_status import IssueStatus
 from app.models.transaction import Transaction
 from app.services.analytics_service import EXCLUDED_OPS_STATUS, SOLVED_OPS_STATUSES
 from app.services.chart_image import render_error_resolution_png
-from app.services.settings_service import get_settings
+from app.services.settings_service import get_settings, signature_logo_path
 from app.services.status_utils import normalize_txn_status
 
 
@@ -184,6 +185,27 @@ def report_attachment(batch_id: int, batch_name: str) -> tuple[bytes, str]:
     return generate_report_bytes(batch_id), f"SmartQR_Settlement_Report_{batch_name}.xlsx"
 
 
+def _logo_bytes() -> tuple[bytes, str]:
+    """(image bytes, subtype) for the signature logo, or (b"", "") when none is
+    configured. A path that no longer exists degrades to no logo rather than
+    failing the send."""
+    path = signature_logo_path()
+    if not path:
+        return b"", ""
+    ext = os.path.splitext(path)[1].lower().lstrip(".")
+    subtype = {"jpg": "jpeg", "svg": "svg+xml"}.get(ext, ext or "png")
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(), subtype
+    except OSError:
+        return b"", ""
+
+
+def _logo_base64() -> str:
+    data, _subtype = _logo_bytes()
+    return base64.b64encode(data).decode("ascii") if data else ""
+
+
 def build_batch_email(batch_id: int) -> dict:
     """
     The draft the preview overlay edits: addresses and subject from settings,
@@ -210,6 +232,7 @@ def build_batch_email(batch_id: int) -> dict:
         "body_html": _default_body_html(batch, stats),
         "chart_png_base64": base64.b64encode(png).decode("ascii") if png else "",
         "signature_html": settings["mail_signature_html"],
+        "signature_logo_base64": _logo_base64(),
         "attach_report": True,
         "report_filename": f"SmartQR_Settlement_Report_{batch.name}.xlsx",
         "stats": stats,
@@ -272,10 +295,22 @@ def send_batch_email(
     # so editing the message in the overlay cannot accidentally delete it.
     # Passing signature_html explicitly (even "") overrides the saved one.
     sig = settings["mail_signature_html"] if signature_html is None else signature_html
+
+    # The logo is a second inline image, referenced from inside the signature
+    # block. Kept out of the signature HTML itself (settings_service builds
+    # that) because only the sender knows the Content-ID.
+    logo_bytes, logo_subtype = _logo_bytes()
+    logo_cid = make_msgid() if logo_bytes else ""
+    logo_html = (
+        f'<div style="margin-top:10px;">'
+        f'<img src="cid:{logo_cid[1:-1]}" alt="" style="border:0;" /></div>'
+        if logo_bytes else ""
+    )
+
     sig_html = (
         f'<div style="margin-top:22px;padding-top:12px;'
-        f'border-top:1px solid #e5e7eb;">{sig}</div>'
-        if (sig or "").strip() else ""
+        f'border-top:1px solid #e5e7eb;">{sig}{logo_html}</div>'
+        if ((sig or "").strip() or logo_bytes) else ""
     )
 
     html = (
@@ -284,11 +319,16 @@ def send_batch_email(
     )
     msg.add_alternative(html, subtype="html")
 
-    if png:
-        # Attach to the HTML part, not the message root, or Outlook shows it as
-        # a separate attachment instead of inline.
+    if png or logo_bytes:
+        # Attach to the HTML part, not the message root, or Outlook shows these
+        # as separate attachments instead of inline.
         html_part = msg.get_payload()[-1]
-        html_part.add_related(png, maintype="image", subtype="png", cid=cid)
+        if png:
+            html_part.add_related(png, maintype="image", subtype="png", cid=cid)
+        if logo_bytes:
+            html_part.add_related(
+                logo_bytes, maintype="image", subtype=logo_subtype, cid=logo_cid
+            )
 
     attached = None
     if attach_report and batch_id is not None:
