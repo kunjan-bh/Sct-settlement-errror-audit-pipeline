@@ -10,11 +10,45 @@ placeholder, and a write that still carries the placeholder is treated as
 "unchanged" rather than overwriting the real password with the mask. That is
 the whole reason writes go through set_settings instead of a plain upsert.
 """
+import os
+
 from app.extensions import db
 from app.models.app_setting import AppSetting
 
 # Sent instead of the real secret, and recognised on the way back in.
 SECRET_MASK = "••••••••"
+
+# Where each setting's default comes from in the environment (backend/.env,
+# loaded in config.py). Precedence is: saved value in the database, then the
+# environment, then the literal default in _DEFINITIONS.
+#
+# This is why the SMTP password can stay out of the database entirely -- leave
+# it unset on the Settings page and it is read from SMTP_PASSWORD every time.
+_ENV_KEYS = {
+    "mail_from": "SMTP_FROM_EMAIL",
+    "mail_from_name": "MAIL_FROM_NAME",
+    "mail_to": "MAIL_TO",
+    "mail_cc": "MAIL_CC",
+    "mail_subject": "MAIL_SUBJECT",
+    "smtp_host": "SMTP_HOST",
+    "smtp_port": "SMTP_PORT",
+    "smtp_username": "SMTP_USERNAME",
+    "smtp_password": "SMTP_PASSWORD",
+    "smtp_timeout": "SMTP_TIMEOUT",
+}
+
+# The signature is assembled from parts rather than pasted as HTML, so the
+# same block can be edited field by field in .env. Order is the order it
+# renders. See _signature_from_env.
+_SIGNATURE_ENV = [
+    ("MAIL_SIGNATURE_NAME", "", "bold"),
+    ("MAIL_SIGNATURE_TITLE", "", "plain"),
+    ("MAIL_SIGNATURE_COMPANY", "", "plain"),
+    ("MAIL_SIGNATURE_PHONE", "Mobile: ", "plain"),
+    ("MAIL_SIGNATURE_TOLL_FREE", "Toll Free: ", "plain"),
+    ("MAIL_SIGNATURE_ADDRESS", "", "muted"),
+    ("MAIL_SIGNATURE_WEBSITE", "", "link"),
+]
 
 # key -> (default, type, secret?)
 #   type is one of "str" | "int" | "bool"
@@ -54,12 +88,71 @@ def _coerce(raw, kind, default):
     return "" if raw is None else str(raw)
 
 
+def _escape(text) -> str:
+    return (
+        str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+
+
+def _signature_from_env() -> str:
+    """
+    Build the signature HTML from the MAIL_SIGNATURE_* variables.
+
+    Used when no signature has been saved on the Settings page, so the common
+    case is "fill in .env once and never touch the UI". Any part left unset is
+    simply skipped, so a signature with no toll-free number renders without a
+    blank line where it would have been.
+    """
+    lines = []
+    for env_key, prefix, style in _SIGNATURE_ENV:
+        value = (os.environ.get(env_key) or "").strip()
+        if not value:
+            continue
+        text = _escape(f"{prefix}{value}")
+        if style == "bold":
+            lines.append(f'<div style="font-weight:600;color:#111827;">{text}</div>')
+        elif style == "muted":
+            lines.append(f'<div style="color:#6b7280;font-size:12px;">{text}</div>')
+        elif style == "link":
+            url = value if value.startswith(("http://", "https://")) else f"https://{value}"
+            lines.append(
+                f'<div><a href="{_escape(url)}" style="color:#2563eb;">{text}</a></div>'
+            )
+        else:
+            lines.append(f'<div style="color:#374151;">{text}</div>')
+
+    if not lines:
+        return ""
+    return '<div style="font-size:13px;line-height:1.45;">' + "".join(lines) + "</div>"
+
+
+def _default_for(key: str, default):
+    """The default before the database is consulted: environment first, then
+    the literal declared in _DEFINITIONS."""
+    if key == "mail_signature_html":
+        return _signature_from_env() or default
+    env_key = _ENV_KEYS.get(key)
+    if env_key:
+        raw = os.environ.get(env_key)
+        if raw is not None and raw.strip() != "":
+            return raw.strip()
+    if key == "smtp_use_tls":
+        # SMTP_ENCRYPTION mirrors the variable name the other SCT tool uses:
+        # tls/starttls -> STARTTLS on the given port, ssl -> implicit SSL
+        # (set SMTP_PORT=465 for that), none -> plaintext.
+        enc = (os.environ.get("SMTP_ENCRYPTION") or "").strip().lower()
+        if enc:
+            return "true" if enc in ("tls", "starttls") else "false"
+    return default
+
+
 def get_settings() -> dict:
-    """Every setting, coerced to its declared type, defaults filled in. Includes
-    real secret values -- for sending, not for the API. See public_settings."""
+    """Every setting, coerced to its declared type. A value saved on the
+    Settings page wins; otherwise the environment; otherwise the declared
+    default. Includes real secret values -- for sending, not for the API."""
     stored = {row.key: row.value for row in AppSetting.query.all()}
     return {
-        key: _coerce(stored.get(key), kind, default)
+        key: _coerce(stored.get(key), kind, _default_for(key, default))
         for key, (default, kind, _secret) in _DEFINITIONS.items()
     }
 
@@ -123,8 +216,13 @@ def settings_schema() -> list[dict]:
     schema = []
     for key, (default, kind, secret) in _DEFINITIONS.items():
         label, group = labels.get(key, (key, "mail"))
+        resolved = _default_for(key, default)
         schema.append({
-            "key": key, "label": label, "group": group,
-            "type": kind, "secret": secret, "default": default,
+            "key": key, "label": label, "group": group, "type": kind,
+            "secret": secret,
+            # What the field falls back to when left blank -- shown as the
+            # placeholder, so .env values are visible without being retyped.
+            "default": SECRET_MASK if (secret and resolved) else resolved,
+            "from_env": bool(_ENV_KEYS.get(key) and os.environ.get(_ENV_KEYS[key])),
         })
     return schema

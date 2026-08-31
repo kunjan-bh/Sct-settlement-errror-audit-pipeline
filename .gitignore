@@ -1,3 +1,15 @@
 backend/venv/
 backend/venv_*/
 backend/.venv/
+
+# Local secrets: SMTP credentials live here, never in the repo.
+.env
+backend/.env
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Runtime data: uploaded settlement files and generated reports
+backend/storage/uploads/
+backend/storage/reports/

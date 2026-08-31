@@ -1,6 +1,14 @@
 import os
 
+from dotenv import load_dotenv
+
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+# Load backend/.env before any module reads os.environ. Secrets (the SMTP
+# password above all) live there and are gitignored; .env.example documents
+# every variable. Values already set in the real environment win, so a
+# container or CI can override the file without editing it.
+load_dotenv(os.path.join(BASE_DIR, ".env"), override=False)
 
 
 class Config:
