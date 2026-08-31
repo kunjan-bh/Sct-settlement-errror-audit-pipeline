@@ -27,6 +27,7 @@ export default function SendSummaryOverlay({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [sent, setSent] = useState<string[] | null>(null);
+  const [attached, setAttached] = useState<{ filename: string; bytes: number } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -57,8 +58,11 @@ export default function SendSummaryOverlay({
         body_html: draft.body_html,
         chart_png_base64: draft.chart_png_base64,
         signature_html: draft.signature_html,
+        attach_report: draft.attach_report,
+        batch_name: draft.batch.name,
       });
       setSent(r.sent_to);
+      setAttached(r.attachment);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to send email");
     } finally {
@@ -94,6 +98,11 @@ export default function SendSummaryOverlay({
           <div className="px-6 py-10 text-center">
             <p className="text-neutral-900 font-medium">Summary sent</p>
             <p className="text-neutral-500 text-sm mt-1">Delivered to {sent.join(", ")}.</p>
+            {attached && (
+              <p className="text-neutral-500 text-xs mt-1">
+                Attached {attached.filename} ({Math.round(attached.bytes / 1024).toLocaleString()} KB).
+              </p>
+            )}
             <button
               type="button"
               onClick={onClose}
@@ -173,6 +182,23 @@ export default function SendSummaryOverlay({
                   value={draft.body_html}
                   onChange={(e) => set("body_html", e.target.value)}
                 />
+              </label>
+
+              <label className="flex items-start gap-2 text-xs text-neutral-600 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={draft.attach_report}
+                  onChange={(e) => set("attach_report", e.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-neutral-900 cursor-pointer"
+                />
+                <span>
+                  Attach the full Excel report —{" "}
+                  <span className="font-medium text-neutral-800">{draft.report_filename}</span>
+                  <span className="block text-neutral-400">
+                    The same workbook as Download Full Report. Built when you send, so it is not
+                    previewed here.
+                  </span>
+                </span>
               </label>
 
               <div>

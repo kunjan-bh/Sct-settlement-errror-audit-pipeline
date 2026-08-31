@@ -421,6 +421,10 @@ export type BatchEmailDraft = {
   /** Appended below the body on send. SMTP bypasses Outlook, so the signature
    *  configured there never applies — this is the one that does. */
   signature_html: string;
+  /** Whether to attach the full Excel report — the same workbook Download
+   *  Full Report produces. Built at send time, not for the preview. */
+  attach_report: boolean;
+  report_filename: string;
   stats: BatchEmailStats;
   smtp_configured: boolean;
 };
@@ -428,11 +432,18 @@ export type BatchEmailDraft = {
 export const batchEmailApi = {
   preview: (batchId: number) => request<BatchEmailDraft>(`/batches/${batchId}/email-preview`),
 
-  send: (batchId: number, draft: Omit<BatchEmailDraft, "batch" | "stats" | "smtp_configured">) =>
-    request<{ sent_to: string[]; cc: string[]; subject: string }>(
-      `/batches/${batchId}/send-email`,
-      { method: "POST", body: JSON.stringify(draft) }
-    ),
+  send: (
+    batchId: number,
+    draft: Omit<BatchEmailDraft, "batch" | "stats" | "smtp_configured" | "report_filename"> & {
+      batch_name?: string;
+    }
+  ) =>
+    request<{
+      sent_to: string[];
+      cc: string[];
+      subject: string;
+      attachment: { filename: string; bytes: number } | null;
+    }>(`/batches/${batchId}/send-email`, { method: "POST", body: JSON.stringify(draft) }),
 };
 
 export const batchesApi = {

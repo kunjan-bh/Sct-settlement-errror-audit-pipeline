@@ -137,6 +137,9 @@ def batch_send_email(batch_id):
             body_html=payload.get("body_html", ""),
             chart_png_base64=payload.get("chart_png_base64", ""),
             signature_html=payload.get("signature_html"),
+            batch_id=batch_id,
+            batch_name=payload.get("batch_name", ""),
+            attach_report=bool(payload.get("attach_report", True)),
         )
     except MailError as e:
         return jsonify({"error": str(e)}), 400

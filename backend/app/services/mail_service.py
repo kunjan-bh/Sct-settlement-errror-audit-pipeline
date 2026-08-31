@@ -10,7 +10,8 @@ settings_service so the common case is press-and-go.
 The Errors & Resolution ring is rendered server-side (chart_image.py) and
 attached inline by Content-ID, so it shows in the body rather than as a
 download, and the mail does not depend on the recipient fetching anything
-from us.
+from us. The full Excel report rides along as a normal attachment -- the
+picture is the summary, the workbook is the evidence behind it.
 """
 import base64
 import smtplib
@@ -169,6 +170,20 @@ def _escape(text) -> str:
     )
 
 
+def report_attachment(batch_id: int, batch_name: str) -> tuple[bytes, str]:
+    """
+    The same workbook the Download Full Report button produces, so the mailed
+    copy and the downloaded one can never differ.
+
+    Imported lazily: report_generator pulls in most of the service layer, and
+    composing a preview should not drag all of that in until an attachment is
+    actually wanted.
+    """
+    from app.services.report_generator import generate_report_bytes
+
+    return generate_report_bytes(batch_id), f"SmartQR_Settlement_Report_{batch_name}.xlsx"
+
+
 def build_batch_email(batch_id: int) -> dict:
     """
     The draft the preview overlay edits: addresses and subject from settings,
@@ -195,6 +210,8 @@ def build_batch_email(batch_id: int) -> dict:
         "body_html": _default_body_html(batch, stats),
         "chart_png_base64": base64.b64encode(png).decode("ascii") if png else "",
         "signature_html": settings["mail_signature_html"],
+        "attach_report": True,
+        "report_filename": f"SmartQR_Settlement_Report_{batch.name}.xlsx",
         "stats": stats,
         "smtp_configured": bool(settings["smtp_host"]),
     }
@@ -203,6 +220,7 @@ def build_batch_email(batch_id: int) -> dict:
 def send_batch_email(
     *, subject: str, from_addr: str, from_name: str, to: str, cc: str,
     body_html: str, chart_png_base64: str = "", signature_html: str | None = None,
+    batch_id: int | None = None, batch_name: str = "", attach_report: bool = False,
 ) -> dict:
     """
     Send one composed message. Everything is passed in rather than re-derived,
@@ -272,6 +290,19 @@ def send_batch_email(
         html_part = msg.get_payload()[-1]
         html_part.add_related(png, maintype="image", subtype="png", cid=cid)
 
+    attached = None
+    if attach_report and batch_id is not None:
+        # Attached to the message root, not to the HTML part: this one is meant
+        # to arrive as a file, unlike the chart which is referenced inline.
+        report_bytes, filename = report_attachment(batch_id, batch_name or str(batch_id))
+        msg.add_attachment(
+            report_bytes,
+            maintype="application",
+            subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=filename,
+        )
+        attached = {"filename": filename, "bytes": len(report_bytes)}
+
     recipients = to_list + cc_list
     port = settings["smtp_port"] or 587
     timeout = settings["smtp_timeout"] or 30
@@ -294,4 +325,7 @@ def send_batch_email(
     except (smtplib.SMTPException, OSError) as e:
         raise MailError(f"Could not send via {host}:{port} — {e}") from e
 
-    return {"sent_to": to_list, "cc": cc_list, "subject": msg["Subject"]}
+    return {
+        "sent_to": to_list, "cc": cc_list, "subject": msg["Subject"],
+        "attachment": attached,
+    }
