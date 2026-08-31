@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { FiChevronDown } from "react-icons/fi";
+import { FiChevronDown, FiSettings } from "react-icons/fi";
 
 // Batch-scoped workflow, grouped under one "Settlement Error" hover menu.
 const settlementItems = [
@@ -14,8 +14,12 @@ const settlementItems = [
 const topLevelItems = [
   { to: "/partner-mapping", label: "Partner Mapping" },
   { to: "/settlement-type", label: "Settlement Type Report" },
-  { to: "/settings", label: "Settings" },
 ];
+
+// Settings sits apart from the rest of the nav: it is app configuration, not
+// a view of the data, so it renders as a gear pushed to the far right rather
+// than as another labelled destination competing with them.
+const SETTINGS_ITEM = { to: "/settings", label: "Settings" };
 
 // Center-anchored underline that grows in on hover -- shared by every nav
 // item (the menu button, Partner Mapping, and each item in the dropdown).
@@ -110,6 +114,23 @@ export default function Layout() {
               <HoverUnderline />
             </NavLink>
           ))}
+
+          <NavLink
+            to={SETTINGS_ITEM.to}
+            title={SETTINGS_ITEM.label}
+            aria-label={SETTINGS_ITEM.label}
+            className={({ isActive }) =>
+              `group relative ml-auto p-2 rounded-md transition-colors duration-150 ${
+                isActive
+                  ? "bg-neutral-900 text-white"
+                  : "text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100"
+              }`
+            }
+          >
+            {/* Spins on hover -- the one bit of motion in the nav, so the gear
+                reads as interactive without needing a label beside it. */}
+            <FiSettings className="text-base transition-transform duration-500 group-hover:rotate-90" />
+          </NavLink>
         </div>
       </nav>
       <Outlet />
