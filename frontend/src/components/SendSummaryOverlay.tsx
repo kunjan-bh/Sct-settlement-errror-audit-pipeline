@@ -147,16 +147,21 @@ export default function SendSummaryOverlay({
                     onChange={(e) => set("from_name", e.target.value)}
                   />
                 </label>
+                {/* Both accept several addresses -- mail_service._split_addresses
+                    takes commas or semicolons and drops blanks. Said here
+                    because nothing else on screen suggests more than one is
+                    allowed. */}
                 <label className="text-xs text-neutral-500 space-y-1 block">
-                  To
+                  To <span className="text-neutral-400">— separate with commas</span>
                   <input
                     className={field}
                     value={draft.to}
+                    placeholder="someone@sct.com.np, someone.else@sct.com.np"
                     onChange={(e) => set("to", e.target.value)}
                   />
                 </label>
                 <label className="text-xs text-neutral-500 space-y-1 block">
-                  Cc
+                  Cc <span className="text-neutral-400">— separate with commas</span>
                   <input
                     className={field}
                     value={draft.cc}
@@ -165,6 +170,22 @@ export default function SendSummaryOverlay({
                   />
                 </label>
               </div>
+
+              {(() => {
+                // Mirrors the server's split, so the count shown here is the
+                // number of people who will actually receive it.
+                const count = (s: string) =>
+                  s.replace(/;/g, ",").split(",").filter((p) => p.trim()).length;
+                const to = count(draft.to);
+                const cc = count(draft.cc);
+                return (
+                  <p className="text-xs text-neutral-500">
+                    Will send to <span className="font-medium text-neutral-800">{to}</span>{" "}
+                    recipient{to === 1 ? "" : "s"}
+                    {cc > 0 && <> and {cc} on Cc</>}.
+                  </p>
+                );
+              })()}
 
               <label className="text-xs text-neutral-500 space-y-1 block">
                 Subject
