@@ -418,6 +418,8 @@ export type BatchEmailDraft = {
   body_html: string;
   /** Base64 PNG of the Errors & Resolution ring, embedded inline on send. */
   chart_png_base64: string;
+  /** Base64 PNG of error volume per aggregator, also embedded inline. */
+  volume_png_base64: string;
   /** Appended below the body on send. SMTP bypasses Outlook, so the signature
    *  configured there never applies — this is the one that does. */
   signature_html: string;

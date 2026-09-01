@@ -57,6 +57,7 @@ export default function SendSummaryOverlay({
         cc: draft.cc,
         body_html: draft.body_html,
         chart_png_base64: draft.chart_png_base64,
+        volume_png_base64: draft.volume_png_base64,
         signature_html: draft.signature_html,
         attach_report: draft.attach_report,
         batch_name: draft.batch.name,
@@ -215,6 +216,13 @@ export default function SendSummaryOverlay({
                   <p className="text-xs text-neutral-400 italic">
                     No outstanding errors in this batch, so no chart is attached.
                   </p>
+                )}
+                {draft.volume_png_base64 && (
+                  <img
+                    src={`data:image/png;base64,${draft.volume_png_base64}`}
+                    alt="Error volume by aggregator"
+                    className="max-w-full border border-neutral-200 rounded mt-3"
+                  />
                 )}
               </div>
 

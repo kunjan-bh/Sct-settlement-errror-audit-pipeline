@@ -24,7 +24,7 @@ from app.models.batch import Batch
 from app.models.issue_status import IssueStatus
 from app.models.transaction import Transaction
 from app.services.analytics_service import EXCLUDED_OPS_STATUS, SOLVED_OPS_STATUSES
-from app.services.chart_image import render_error_resolution_png
+from app.services.chart_image import render_entity_volume_png, render_error_resolution_png
 from app.services.settings_service import get_settings, signature_logo_path
 from app.services.status_utils import normalize_txn_status
 
@@ -66,6 +66,10 @@ def batch_summary_numbers(batch_id: int) -> dict:
     }
 
     status_breakdown = {"failed": 0, "pending": 0, "lo_progress": 0}
+    # Errors per partner, for the volume chart. Counted in the same pass and
+    # behind the same filters as everything else, so the bars add up to
+    # total_errors rather than telling a slightly different story.
+    per_entity: dict[str, int] = {}
     solved = unsolved = excluded = retry_resolved = 0
     total_transactions = len(rows)
 
@@ -97,6 +101,8 @@ def batch_summary_numbers(batch_id: int) -> dict:
 
         if txn_status in status_breakdown:
             status_breakdown[txn_status] += 1
+        entity = "SCT" if side == "sct" else (row.partner_name or "No Aggregator")
+        per_entity[entity] = per_entity.get(entity, 0) + 1
         if eff in SOLVED_OPS_STATUSES:
             solved += 1
         else:
@@ -110,6 +116,7 @@ def batch_summary_numbers(batch_id: int) -> dict:
         "resolution": {"solved": solved, "unsolved": unsolved},
         "excluded": excluded,
         "retry_resolved": retry_resolved,
+        "per_entity": sorted(per_entity.items(), key=lambda kv: -kv[1]),
         "resolution_rate": round(solved * 100.0 / total_errors, 2) if total_errors else 0.0,
     }
 
@@ -127,16 +134,19 @@ def _default_body_html(batch, stats: dict) -> str:
     notes_html = (
         "<br>".join(_escape(line) for line in notes.splitlines())
         if notes
-        else "<span style='color:#9ca3af'>(no batch notes were recorded)</span>"
+        else "<span style='color:#888888'>(no batch notes were recorded)</span>"
     )
     s = stats["status_breakdown"]
     r = stats["resolution"]
 
-    def row(label, value, color="#111827"):
+    def row(label, value):
+        # Deliberately monochrome. The figures were colour-coded to match the
+        # chart, but in a table the colour said nothing the label did not
+        # already say, and read as decoration in a report to management.
         return (
             f"<tr>"
-            f"<td style='padding:4px 14px 4px 0;color:#6b7280;'>{_escape(label)}</td>"
-            f"<td style='padding:4px 0;font-weight:600;color:{color};'>{value:,}</td>"
+            f"<td style='padding:4px 16px 4px 0;color:#444444;'>{_escape(label)}</td>"
+            f"<td style='padding:4px 0;font-weight:600;text-align:right;'>{value:,}</td>"
             f"</tr>"
         )
 
@@ -144,23 +154,20 @@ def _default_body_html(batch, stats: dict) -> str:
 <p style="margin:0 0 14px 0;">Please find below the QR transaction analysis summary for
 <strong>{_escape(batch.name)}</strong>.</p>
 
-<div style="margin:0 0 18px 0;padding:12px 14px;background:#f9fafb;border-left:3px solid #2563eb;">
+<div style="margin:0 0 18px 0;padding:10px 14px;border-left:2px solid #cccccc;">
   {notes_html}
 </div>
 
 <table style="border-collapse:collapse;font-size:13px;margin:0 0 18px 0;">
   {row("Total transactions", stats["total_transactions"])}
   {row("Error transactions", stats["total_errors"])}
-  {row("Failed", s["failed"], "#dc2626")}
-  {row("Lo Progress", s["lo_progress"], "#2563eb")}
-  {row("Pending", s["pending"], "#d97706")}
-  {row("Solved", r["solved"], "#16a34a")}
-  {row("Unsolved", r["unsolved"], "#6b7280")}
-</table>
-
-<p style="margin:0 0 6px 0;font-size:13px;color:#6b7280;">
-  Resolution rate: <strong style="color:#111827;">{stats["resolution_rate"]}%</strong>
-</p>"""
+  {row("Failed", s["failed"])}
+  {row("Lo Progress", s["lo_progress"])}
+  {row("Pending", s["pending"])}
+  {row("Solved", r["solved"])}
+  {row("Unsolved", r["unsolved"])}
+  {row("Resolution rate", stats["resolution_rate"])}
+</table>"""
 
 
 def _escape(text) -> str:
@@ -221,6 +228,9 @@ def build_batch_email(batch_id: int) -> dict:
         stats["resolution"],
         title=f"{batch.name} — {stats['total_errors']:,} error transactions",
     )
+    volume_png = render_entity_volume_png(
+        stats["per_entity"], title="Error volume by aggregator / bank"
+    )
 
     return {
         "batch": batch.to_dict(),
@@ -231,6 +241,7 @@ def build_batch_email(batch_id: int) -> dict:
         "cc": settings["mail_cc"],
         "body_html": _default_body_html(batch, stats),
         "chart_png_base64": base64.b64encode(png).decode("ascii") if png else "",
+        "volume_png_base64": base64.b64encode(volume_png).decode("ascii") if volume_png else "",
         "signature_html": settings["mail_signature_html"],
         "signature_logo_base64": _logo_base64(),
         "attach_report": True,
@@ -242,7 +253,8 @@ def build_batch_email(batch_id: int) -> dict:
 
 def send_batch_email(
     *, subject: str, from_addr: str, from_name: str, to: str, cc: str,
-    body_html: str, chart_png_base64: str = "", signature_html: str | None = None,
+    body_html: str, chart_png_base64: str = "", volume_png_base64: str = "",
+    signature_html: str | None = None,
     batch_id: int | None = None, batch_name: str = "", attach_report: bool = False,
 ) -> dict:
     """
@@ -275,19 +287,32 @@ def send_batch_email(
     text_body = re.sub(r"\n{3,}", "\n\n", text_body).strip()
     msg.set_content(text_body or "QR Transaction Analysis Report")
 
-    cid = make_msgid()
-    chart_html = ""
-    png = b""
-    if chart_png_base64:
+    def _decode(b64):
+        if not b64:
+            return b""
         try:
-            png = base64.b64decode(chart_png_base64)
+            return base64.b64decode(b64)
         except Exception:
-            png = b""
+            return b""
+
+    # Each inline image needs its own Content-ID; cid: strips the angle
+    # brackets make_msgid supplies.
+    cid = make_msgid()
+    volume_cid = make_msgid()
+    png = _decode(chart_png_base64)
+    volume_png = _decode(volume_png_base64)
+
+    chart_html = ""
     if png:
-        # cid: strips the angle brackets make_msgid supplies.
-        chart_html = (
+        chart_html += (
             f'<div style="margin:18px 0;">'
             f'<img src="cid:{cid[1:-1]}" alt="Errors and resolution" '
+            f'style="max-width:100%;height:auto;" /></div>'
+        )
+    if volume_png:
+        chart_html += (
+            f'<div style="margin:18px 0;">'
+            f'<img src="cid:{volume_cid[1:-1]}" alt="Error volume by aggregator" '
             f'style="max-width:100%;height:auto;" /></div>'
         )
 
@@ -315,16 +340,20 @@ def send_batch_email(
 
     html = (
         '<div style="font-family:Segoe UI,Calibri,Arial,sans-serif;font-size:14px;'
-        f'color:#111827;line-height:1.5;">{body_html or ""}{chart_html}{sig_html}</div>'
+        f'color:#000000;line-height:1.5;">{body_html or ""}{chart_html}{sig_html}</div>'
     )
     msg.add_alternative(html, subtype="html")
 
-    if png or logo_bytes:
+    if png or volume_png or logo_bytes:
         # Attach to the HTML part, not the message root, or Outlook shows these
         # as separate attachments instead of inline.
         html_part = msg.get_payload()[-1]
         if png:
             html_part.add_related(png, maintype="image", subtype="png", cid=cid)
+        if volume_png:
+            html_part.add_related(
+                volume_png, maintype="image", subtype="png", cid=volume_cid
+            )
         if logo_bytes:
             html_part.add_related(
                 logo_bytes, maintype="image", subtype=logo_subtype, cid=logo_cid

@@ -136,6 +136,7 @@ def batch_send_email(batch_id):
             cc=payload.get("cc", ""),
             body_html=payload.get("body_html", ""),
             chart_png_base64=payload.get("chart_png_base64", ""),
+            volume_png_base64=payload.get("volume_png_base64", ""),
             signature_html=payload.get("signature_html"),
             batch_id=batch_id,
             batch_name=payload.get("batch_name", ""),

@@ -37,6 +37,63 @@ _STATUS_ORDER = [
 ]
 
 
+# One neutral bar colour rather than a palette: the bars are one series, so
+# colouring them differently would imply a distinction that isn't there.
+BAR_COLOR = "#2f5597"
+
+
+def render_entity_volume_png(entities: list, title: str = "", top_n: int = 12) -> bytes:
+    """
+    Horizontal bar of error volume per aggregator/bank, biggest first.
+
+    `entities` is [(name, count), ...] in any order. Returns b"" when there is
+    nothing to plot, which the caller treats as "send without this chart"
+    rather than as an error.
+
+    Horizontal because partner names are long and would overlap as x-axis
+    labels; sorted ascending so matplotlib's bottom-up y-axis puts the largest
+    at the top.
+    """
+    rows = [(str(n), int(c)) for n, c in entities if c]
+    if not rows:
+        return b""
+
+    rows.sort(key=lambda r: r[1], reverse=True)
+    rows = rows[:top_n]
+    rows.reverse()
+
+    names = [r[0] for r in rows]
+    values = [r[1] for r in rows]
+
+    # Grow with the number of bars so they never bunch up.
+    height = max(2.2, 0.34 * len(rows) + 1.0)
+    fig, ax = plt.subplots(figsize=(6.6, height), dpi=160)
+    fig.patch.set_facecolor("white")
+
+    bars = ax.barh(names, values, color=BAR_COLOR, height=0.62)
+    ax.bar_label(bars, padding=4, fontsize=8.5, color="#374151",
+                 fmt=lambda v: f"{int(v):,}")
+
+    ax.set_xlabel("Error transactions", fontsize=9, color="#6b7280")
+    ax.tick_params(axis="y", labelsize=9, length=0)
+    ax.tick_params(axis="x", labelsize=8, colors="#6b7280")
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color("#e5e7eb")
+    ax.xaxis.grid(True, color="#f3f4f6", linewidth=0.8)
+    ax.set_axisbelow(True)
+    # Headroom so the value labels are not clipped by the axes edge.
+    ax.set_xlim(0, max(values) * 1.16)
+
+    if title:
+        ax.set_title(title, fontsize=11, color="#1f2937", pad=10, loc="left")
+
+    buf = BytesIO()
+    fig.savefig(buf, format="png", bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return buf.getvalue()
+
+
 def render_error_resolution_png(status_breakdown: dict, resolution: dict, title: str = "") -> bytes:
     """
     Two concentric rings as a PNG.
