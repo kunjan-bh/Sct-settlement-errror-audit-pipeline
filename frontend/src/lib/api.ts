@@ -492,9 +492,21 @@ export const batchesApi = {
   remove: (id: number) => request<void>(`/batches/${id}`, { method: "DELETE" }),
 };
 
+/** A member code seen in real transactions that has no mapping, so every MID
+ *  under it resolves to "No Aggregator". */
+export type UnmappedCode = {
+  member_code: string;
+  txn_count: number;
+  sample_mid: string | null;
+  sample_merchant: string | null;
+  last_seen: string | null;
+};
+
 export const partnerMappingsApi = {
   list: (bucket?: "aggregator" | "bank_wallet") =>
     request<PartnerMapping[]>(`/partner-mappings${bucket ? `?bucket=${bucket}` : ""}`),
+
+  unmapped: () => request<UnmappedCode[]>("/partner-mappings/unmapped"),
 
   create: (data: {
     member_code: string;

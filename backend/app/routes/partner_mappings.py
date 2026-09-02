@@ -9,6 +9,7 @@ from flask import Blueprint, request, jsonify
 
 from app.extensions import db
 from app.models.partner_mapping import PartnerMapping, normalize_member_code
+from app.models.transaction import Transaction
 
 partner_mappings_bp = Blueprint("partner_mappings", __name__, url_prefix="/api/partner-mappings")
 
@@ -26,6 +27,51 @@ def list_mappings():
         query = query.filter_by(bucket=bucket)
     mappings = query.order_by(PartnerMapping.partner_name, PartnerMapping.member_code).all()
     return jsonify([m.to_dict() for m in mappings])
+
+
+@partner_mappings_bp.get("/unmapped")
+def list_unmapped():
+    """
+    Member codes that appear in real transactions but have no mapping, so
+    every MID under them resolves to "No Aggregator".
+
+    This is the worklist for keeping partner_mappings level with the BIN
+    export: the dashboard already shows HOW MANY transactions fell through,
+    but not WHICH codes to add, which previously meant a manual query.
+
+    Computed from the transactions rather than from partner_name, so a code
+    added since a batch was ingested drops off this list immediately --
+    partner_name is resolved once at ingest and would keep saying
+    "No Aggregator" long after the mapping exists.
+    """
+    known = {m.member_code for m in PartnerMapping.query.all()}
+
+    rows = (
+        db.session.query(
+            db.func.substr(Transaction.mid, 1, 3).label("code"),
+            db.func.count(Transaction.id).label("txns"),
+            db.func.min(Transaction.mid).label("sample_mid"),
+            db.func.min(Transaction.merchant_name).label("sample_merchant"),
+            db.func.max(Transaction.txn_datetime).label("last_seen"),
+        )
+        .filter(Transaction.mid.isnot(None), Transaction.mid != "")
+        .group_by("code")
+        .all()
+    )
+
+    unmapped = [
+        {
+            "member_code": r.code,
+            "txn_count": r.txns,
+            "sample_mid": r.sample_mid,
+            "sample_merchant": r.sample_merchant,
+            "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+        }
+        for r in rows
+        if r.code and r.code not in known
+    ]
+    unmapped.sort(key=lambda u: (-u["txn_count"], u["member_code"]))
+    return jsonify(unmapped)
 
 
 @partner_mappings_bp.post("")

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { FiTrash2 } from "react-icons/fi";
-import { partnerMappingsApi, type PartnerMapping } from "../lib/api";
+import { partnerMappingsApi, type PartnerMapping, type UnmappedCode } from "../lib/api";
 
 /**
  * The page you asked for: manage which 3-char MID member codes belong to
@@ -19,6 +19,7 @@ import { partnerMappingsApi, type PartnerMapping } from "../lib/api";
  */
 export default function PartnerMappingPage() {
   const [mappings, setMappings] = useState<PartnerMapping[]>([]);
+  const [unmapped, setUnmapped] = useState<UnmappedCode[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,7 +27,12 @@ export default function PartnerMappingPage() {
     setLoading(true);
     setError(null);
     try {
-      setMappings(await partnerMappingsApi.list());
+      const [rows, gaps] = await Promise.all([
+        partnerMappingsApi.list(),
+        partnerMappingsApi.unmapped(),
+      ]);
+      setMappings(rows);
+      setUnmapped(gaps);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load mappings");
     } finally {
@@ -56,9 +62,72 @@ export default function PartnerMappingPage() {
         </div>
       )}
 
+      <UnmappedSection items={unmapped} loading={loading} />
       <BankWalletSection items={bankWallets} loading={loading} onChanged={refresh} />
       <AggregatorSection groups={aggregatorGroups} loading={loading} onChanged={refresh} />
     </div>
+  );
+}
+
+/**
+ * Member codes that show up in real transactions but have no mapping, so every
+ * MID under them resolves to "No Aggregator".
+ *
+ * The dashboard already reports how many transactions fell through; this says
+ * WHICH codes to add, which otherwise needed a hand-written query. Computed
+ * from the transactions rather than from the stored partner_name, so adding a
+ * mapping clears the row here immediately -- partner_name is resolved once at
+ * ingest and keeps saying "No Aggregator" on old batches long after the
+ * mapping exists.
+ */
+function UnmappedSection({ items, loading }: { items: UnmappedCode[]; loading: boolean }) {
+  if (loading || items.length === 0) return null;
+
+  const total = items.reduce((sum, u) => sum + u.txn_count, 0);
+
+  return (
+    <section className="space-y-3">
+      <div className="flex items-baseline gap-2">
+        <h2 className="text-lg font-medium text-neutral-800">Unmapped member codes</h2>
+        <span className="text-xs font-medium bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">
+          {items.length}
+        </span>
+      </div>
+      <p className="text-neutral-500 text-sm">
+        Seen in transactions but not mapped below, so {total.toLocaleString()} transaction
+        {total === 1 ? "" : "s"} resolved to "No Aggregator". Add each to an aggregator or
+        bank/wallet to fix future batches.
+      </p>
+
+      <div className="border border-amber-200 bg-amber-50/40 rounded-lg overflow-hidden">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs uppercase tracking-wide text-neutral-500 border-b border-amber-200">
+              <th className="px-4 py-2 font-medium">Code</th>
+              <th className="px-4 py-2 font-medium text-right">Txns</th>
+              <th className="px-4 py-2 font-medium">Sample MID</th>
+              <th className="px-4 py-2 font-medium">Sample merchant</th>
+              <th className="px-4 py-2 font-medium">Last seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((u) => (
+              <tr key={u.member_code} className="border-b border-amber-100 last:border-0">
+                <td className="px-4 py-2 font-mono font-semibold text-neutral-900">{u.member_code}</td>
+                <td className="px-4 py-2 text-right tabular-nums text-neutral-700">
+                  {u.txn_count.toLocaleString()}
+                </td>
+                <td className="px-4 py-2 font-mono text-xs text-neutral-600">{u.sample_mid}</td>
+                <td className="px-4 py-2 text-neutral-700">{u.sample_merchant || "—"}</td>
+                <td className="px-4 py-2 text-neutral-500 text-xs">
+                  {u.last_seen ? u.last_seen.slice(0, 10) : "—"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
   );
 }
 
