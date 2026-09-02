@@ -464,6 +464,83 @@ export const batchEmailApi = {
     }>(`/batches/${batchId}/send-email`, { method: "POST", body: JSON.stringify(draft) }),
 };
 
+// ── Issuer / Acquirer reconciliation ─────────────────────────────────────
+// Upload one transaction export and (optionally) one settlement export.
+// Inside the transaction file issuing and acquiring always balance; the gap
+// worth looking at is transacted vs settled. See
+// backend/app/services/issuer_acquirer_service.py.
+
+export type IssuingRow = {
+  name: string;
+  txn_count: number;
+  txn_amount: number;
+  share: number;
+};
+
+export type AcquiringRow = {
+  name: string;
+  txn_count: number;
+  txn_amount: number;
+  settled_count: number;
+  settled_amount: number;
+  /** Positive = transacted but not yet settled. */
+  variance_amount: number;
+  variance_count: number;
+};
+
+export type IssuerAcquirerData = {
+  totals: {
+    txn_rows: number;
+    txn_amount: number;
+    settlement_rows: number;
+    settled_count: number;
+    settled_amount: number;
+    variance_amount: number;
+    variance_count: number;
+    settled_pct: number;
+    window: string;
+    has_settlement: boolean;
+  };
+  issuing: IssuingRow[];
+  acquiring: AcquiringRow[];
+  files: { transaction: string; settlement: string };
+};
+
+function issuerAcquirerForm(txnFile: File, settlementFile?: File | null) {
+  const fd = new FormData();
+  fd.append("txn_file", txnFile);
+  if (settlementFile) fd.append("settlement_file", settlementFile);
+  return fd;
+}
+
+export const issuerAcquirerApi = {
+  analyze: async (txnFile: File, settlementFile?: File | null): Promise<IssuerAcquirerData> => {
+    const res = await fetch("/api/issuer-acquirer/analyze", {
+      method: "POST",
+      body: issuerAcquirerForm(txnFile, settlementFile),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `Analysis failed: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  downloadReport: (
+    txnFile: File,
+    settlementFile: File | null | undefined,
+    reasons: Record<string, string>
+  ) => {
+    const fd = issuerAcquirerForm(txnFile, settlementFile);
+    fd.append("reasons", JSON.stringify(reasons));
+    return downloadBlob(
+      "/api/issuer-acquirer/report",
+      { method: "POST", body: fd },
+      "Issuer_Acquirer_Reconciliation.xlsx"
+    );
+  },
+};
+
 export const batchesApi = {
   upload: async (file: File): Promise<BatchWithDashboard> => {
     const formData = new FormData();

@@ -39,4 +39,7 @@ def create_app(config_class=Config):
     from app.routes.settings import settings_bp
     app.register_blueprint(settings_bp)
 
+    from app.routes.issuer_acquirer import issuer_acquirer_bp
+    app.register_blueprint(issuer_acquirer_bp)
+
     return app

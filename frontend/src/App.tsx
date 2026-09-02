@@ -7,6 +7,7 @@ import PartnerMappingPage from "./pages/PartnerMappingPage";
 import AnalyticsPage from "./pages/AnalyticsPage";
 import SettlementTypePage from "./pages/SettlementTypePage";
 import SettingsPage from "./pages/SettingsPage";
+import IssuerAcquirerPage from "./pages/IssuerAcquirerPage";
 
 function App() {
   return (
@@ -20,6 +21,7 @@ function App() {
           <Route path="/partner-mapping" element={<PartnerMappingPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/settlement-type" element={<SettlementTypePage />} />
+          <Route path="/issuer-acquirer" element={<IssuerAcquirerPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Routes>

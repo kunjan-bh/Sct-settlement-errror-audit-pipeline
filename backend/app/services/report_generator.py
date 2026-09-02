@@ -1645,3 +1645,171 @@ def generate_aggregator_report_bytes(batch_id: int, partner_name: str, status_fi
     wb.save(output)
     output.seek(0)
     return output.getvalue()
+
+
+# ==========================================
+# Issuer / Acquirer reconciliation report
+# ==========================================
+
+def generate_issuer_acquirer_report_bytes(data: dict, reasons: dict | None = None) -> bytes:
+    """
+    Three sheets: Summary, Issuing, Acquiring.
+
+    Issuing and Acquiring are separate sheets by request -- they answer
+    different questions and are read by different people. Issuing is "whose
+    customers spent", one row per issuing bank or wallet. Acquiring is "who got
+    paid", and carries the reconciliation: what the switch transacted, what
+    actually settled, and the gap between them.
+
+    `reasons` maps an acquirer name to the note ops typed against its variance.
+    A number cannot say whether a shortfall is timing or a break, so the column
+    exists to be filled in before the report is shared.
+    """
+    reasons = reasons or {}
+    totals = data["totals"]
+
+    font_title = Font(name="Calibri", size=14, bold=True, color="1F4E79")
+    font_section = Font(name="Calibri", size=11, bold=True, color="1F4E79")
+    font_header = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
+    font_bold = Font(name="Calibri", size=10, bold=True)
+    font_regular = Font(name="Calibri", size=10)
+    font_muted = Font(name="Calibri", size=9, italic=True, color="808080")
+    fill_header = PatternFill(start_color="2F5597", end_color="2F5597", fill_type="solid")
+    thin = Side(border_style="thin", color="D9D9D9")
+    border_cell = Border(left=thin, right=thin, top=thin, bottom=thin)
+    align_left = Alignment(horizontal="left", vertical="center")
+    align_right = Alignment(horizontal="right", vertical="center")
+    align_center = Alignment(horizontal="center", vertical="center")
+    MONEY = "#,##0.00"
+
+    wb = openpyxl.Workbook()
+    default_sheet = wb.active
+
+    def header_row(ws, row, headers, widths):
+        for idx, h in enumerate(headers, start=1):
+            cell = ws.cell(row=row, column=idx, value=h)
+            cell.font = font_header
+            cell.fill = fill_header
+            cell.alignment = align_center
+            cell.border = border_cell
+        for idx, w in enumerate(widths, start=1):
+            ws.column_dimensions[get_column_letter(idx)].width = w
+
+    def write(ws, row, values, formats=None):
+        for idx, v in enumerate(values, start=1):
+            cell = ws.cell(row=row, column=idx, value=v)
+            cell.font = font_regular
+            cell.border = border_cell
+            cell.alignment = align_left if idx == 1 else align_right
+            if formats and idx in formats:
+                cell.number_format = formats[idx]
+
+    # ---- Sheet 1: Summary ----
+    ws = wb.create_sheet(title="Summary")
+    ws.sheet_view.showGridLines = False
+    ws["A1"] = "Issuer / Acquirer Reconciliation"
+    ws["A1"].font = font_title
+    ws["A2"] = (
+        "Every transaction debits an issuer and pays an acquirer, so inside the "
+        "transaction file those two sides always balance. The gap that matters is "
+        "against settlement: what was transacted versus what was actually paid out."
+    )
+    ws["A2"].font = font_muted
+
+    row = 4
+    for label, value, fmt in (
+        ("Period covered:", totals.get("window") or "—", None),
+        ("Transactions read:", totals["txn_rows"], "#,##0"),
+        ("Transaction amount:", totals["txn_amount"], MONEY),
+        ("Settlement rows read:", totals["settlement_rows"], "#,##0"),
+        ("Settled successfully:", totals["settled_count"], "#,##0"),
+        ("Settled amount:", totals["settled_amount"], MONEY),
+        ("Variance (transacted - settled):", totals["variance_amount"], MONEY),
+        ("Settled share of transacted:", totals["settled_pct"] / 100.0, "0.0%"),
+    ):
+        ws.cell(row=row, column=1, value=label).font = font_bold
+        c = ws.cell(row=row, column=2, value=value)
+        c.font = font_regular
+        c.alignment = align_right
+        if fmt:
+            c.number_format = fmt
+        row += 1
+
+    if not totals.get("has_settlement"):
+        row += 1
+        n = ws.cell(row=row, column=1, value=(
+            "No settlement file was uploaded, so the settled columns and every "
+            "variance are blank. The issuing and acquiring splits below still hold."
+        ))
+        n.font = font_muted
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+
+    ws.column_dimensions["A"].width = 34
+    ws.column_dimensions["B"].width = 22
+
+    # ---- Sheet 2: Issuing ----
+    ws = wb.create_sheet(title="Issuing")
+    ws.sheet_view.showGridLines = False
+    ws["A1"] = "Issuing — by issuing bank / wallet"
+    ws["A1"].font = font_title
+    ws["A2"] = "Whose customers spent. One row per issuer named by the switch."
+    ws["A2"].font = font_muted
+    header_row(ws, 4, ["Issuer", "Transactions", "Amount", "% of total"], [40, 15, 20, 13])
+    row = 5
+    for r in data["issuing"]:
+        write(ws, row, [r["name"], r["txn_count"], r["txn_amount"], r["share"] / 100.0],
+              formats={2: "#,##0", 3: MONEY, 4: "0.0%"})
+        row += 1
+    if data["issuing"]:
+        ws.cell(row=row, column=1, value="Total").font = font_bold
+        for col, val, fmt in ((2, totals["txn_rows"], "#,##0"), (3, totals["txn_amount"], MONEY)):
+            c = ws.cell(row=row, column=col, value=val)
+            c.font = font_bold
+            c.number_format = fmt
+            c.alignment = align_right
+        ws.freeze_panes = ws.cell(row=5, column=1)
+        ws.auto_filter.ref = f"A4:D{row - 1}"
+
+    # ---- Sheet 3: Acquiring ----
+    ws = wb.create_sheet(title="Acquiring")
+    ws.sheet_view.showGridLines = False
+    ws["A1"] = "Acquiring — transacted vs settled"
+    ws["A1"].font = font_title
+    ws["A2"] = (
+        "Who got paid. A positive variance is transacted-but-not-yet-settled; "
+        "negative means the settlement file covers transactions this export does not. "
+        "Fill in the reason before sharing — the number alone cannot say whether a gap "
+        "is timing or a break."
+    )
+    ws["A2"].font = font_muted
+    header_row(
+        ws, 4,
+        ["Acquirer", "Txns", "Transacted", "Settled txns", "Settled", "Variance", "Reason"],
+        [36, 10, 18, 13, 18, 18, 44],
+    )
+    row = 5
+    for r in data["acquiring"]:
+        write(ws, row, [
+            r["name"], r["txn_count"], r["txn_amount"],
+            r["settled_count"], r["settled_amount"], r["variance_amount"],
+            reasons.get(r["name"], ""),
+        ], formats={2: "#,##0", 3: MONEY, 4: "#,##0", 5: MONEY, 6: MONEY})
+        ws.cell(row=row, column=7).alignment = align_left
+        row += 1
+    if data["acquiring"]:
+        ws.cell(row=row, column=1, value="Total").font = font_bold
+        for col, val in ((2, totals["txn_rows"]), (3, totals["txn_amount"]),
+                         (4, totals["settled_count"]), (5, totals["settled_amount"]),
+                         (6, totals["variance_amount"])):
+            c = ws.cell(row=row, column=col, value=val)
+            c.font = font_bold
+            c.number_format = MONEY if col in (3, 5, 6) else "#,##0"
+            c.alignment = align_right
+        ws.freeze_panes = ws.cell(row=5, column=1)
+        ws.auto_filter.ref = f"A4:G{row - 1}"
+
+    wb.remove(default_sheet)
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
