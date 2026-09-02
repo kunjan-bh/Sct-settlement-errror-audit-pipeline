@@ -376,9 +376,19 @@ export type SettingField = {
   default: string;
 };
 
+/** Whether mail can be sent, without revealing any of the transport. The
+ *  smtp_* values are configured in backend/.env and never leave the server. */
+export type SmtpStatus = {
+  configured: boolean;
+  host_set: boolean;
+  credentials_set: boolean;
+  from_domain: string;
+};
+
 export type SettingsPayload = {
   values: Record<string, string | number | boolean>;
   schema: SettingField[];
+  smtp: SmtpStatus;
 };
 
 /** Sent in place of a stored secret; echo it back unchanged to leave it alone. */

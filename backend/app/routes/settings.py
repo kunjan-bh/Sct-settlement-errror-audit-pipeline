@@ -8,16 +8,26 @@ carries the mask back means "unchanged". See services/settings_service.py.
 from flask import Blueprint, current_app, jsonify, request
 
 from app.services.mail_service import MailError, send_batch_email
-from app.services.settings_service import public_settings, set_settings, settings_schema
+from app.services.settings_service import (
+    public_settings,
+    set_settings,
+    settings_schema,
+    smtp_status,
+)
 
 settings_bp = Blueprint("settings", __name__, url_prefix="/api/settings")
 
 
 @settings_bp.get("")
 def get_all_settings():
-    """Current values (secrets masked) plus the field metadata the form is
-    built from, so adding a setting needs no frontend change."""
-    return jsonify({"values": public_settings(), "schema": settings_schema()})
+    """Current values plus the field metadata the form is built from, so adding
+    a setting needs no frontend change. The SMTP transport is deliberately
+    absent -- `smtp` reports only whether it works."""
+    return jsonify({
+        "values": public_settings(),
+        "schema": settings_schema(),
+        "smtp": smtp_status(),
+    })
 
 
 @settings_bp.put("")
@@ -25,7 +35,11 @@ def update_settings():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return jsonify({"error": "Expected a JSON object of setting values."}), 400
-    return jsonify({"values": set_settings(payload), "schema": settings_schema()})
+    return jsonify({
+        "values": set_settings(payload),
+        "schema": settings_schema(),
+        "smtp": smtp_status(),
+    })
 
 
 @settings_bp.post("/test-email")

@@ -5,10 +5,16 @@ Every setting is declared in _DEFINITIONS with its default and type, so the
 Settings page can render the form from the API rather than hardcoding fields,
 and a new setting needs one entry here and nothing else.
 
-The SMTP password is the one value never sent to the browser: reads return a
-placeholder, and a write that still carries the placeholder is treated as
-"unchanged" rather than overwriting the real password with the mask. That is
-the whole reason writes go through set_settings instead of a plain upsert.
+The SMTP transport is configured in backend/.env and is NOT exposed here.
+public_settings() drops every smtp_* key and settings_schema() omits them, so
+the host, username and password never reach the browser at all -- the Settings
+page gets smtp_status() instead, which says only whether the transport is
+usable. Server credentials have no business being round-tripped through a web
+form, and there is nothing to leak from a page that never received them.
+
+set_settings() still refuses to overwrite a stored secret with the mask, which
+matters because the key is writable by any client even though our own UI no
+longer offers it.
 """
 import os
 
@@ -72,6 +78,10 @@ _DEFINITIONS = {
     "smtp_use_tls": ("true", "bool", False),
     "smtp_timeout": ("30", "int", False),
 }
+
+# Configured in .env only. Never sent to the browser, never rendered as a
+# form field -- see smtp_status() for what the Settings page gets instead.
+ENV_ONLY_PREFIX = "smtp_"
 
 _TRUE = {"1", "true", "yes", "on"}
 
@@ -203,13 +213,39 @@ def get_settings() -> dict:
 
 
 def public_settings() -> dict:
-    """What the Settings page gets: same shape, but secrets replaced by a mask
-    (or left empty when never set, so the form can show a real empty field)."""
+    """
+    What the Settings page gets. Every smtp_* key is removed rather than
+    masked: a mask still tells the browser a value exists and invites a form
+    field for it, and none of the transport belongs in the UI.
+    """
     values = get_settings()
-    for key, (_default, _kind, secret) in _DEFINITIONS.items():
-        if secret:
-            values[key] = SECRET_MASK if values.get(key) else ""
-    return values
+    return {
+        key: value
+        for key, value in values.items()
+        if not key.startswith(ENV_ONLY_PREFIX)
+    }
+
+
+def smtp_status() -> dict:
+    """
+    Whether the mail transport is usable, without revealing any of it.
+
+    `configured` is what gates sending: a host is the minimum, and if a
+    username is set then a password must be too, otherwise the login fails at
+    send time rather than here.
+    """
+    values = get_settings()
+    host = bool((values["smtp_host"] or "").strip())
+    username = bool((values["smtp_username"] or "").strip())
+    password = bool((values["smtp_password"] or "").strip())
+    return {
+        "configured": host and (not username or password),
+        "host_set": host,
+        "credentials_set": username and password,
+        # Enough to tell one .env from another when something looks wrong,
+        # without handing over the address itself.
+        "from_domain": (values["mail_from"] or "").split("@")[-1] if values["mail_from"] else "",
+    }
 
 
 def set_settings(updates: dict) -> dict:
@@ -260,6 +296,8 @@ def settings_schema() -> list[dict]:
     }
     schema = []
     for key, (default, kind, secret) in _DEFINITIONS.items():
+        if key.startswith(ENV_ONLY_PREFIX):
+            continue  # configured in .env; no form field for it
         label, group = labels.get(key, (key, "mail"))
         resolved = _default_for(key, default)
         schema.append({

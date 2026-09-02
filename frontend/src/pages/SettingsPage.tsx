@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { FiSave, FiSend, FiMail, FiServer } from "react-icons/fi";
-import { settingsApi, SECRET_MASK, type SettingField } from "../lib/api";
+import { FiSave, FiSend, FiMail, FiServer, FiCheckCircle, FiAlertTriangle } from "react-icons/fi";
+import { settingsApi, SECRET_MASK, type SettingField, type SmtpStatus } from "../lib/api";
 
 /**
  * Settings: the mail and SMTP configuration behind the end-of-batch summary
@@ -20,17 +20,27 @@ const GROUPS: { key: SettingField["group"]; title: string; blurb: string; icon: 
       "Who the batch summary comes from and goes to. These are the defaults — you can still change any of them in the preview before sending.",
     icon: FiMail,
   },
-  {
-    key: "smtp",
-    title: "SMTP Server",
-    blurb:
-      "The mail server used to send. Nothing can be sent until a host is set. Port 465 uses implicit SSL; anything else uses STARTTLS when enabled.",
-    icon: FiServer,
-  },
 ];
+
+function StatusRow({ ok, label }: { ok: boolean; label: string }) {
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      {ok ? (
+        <FiCheckCircle className="text-emerald-600 shrink-0" />
+      ) : (
+        <FiAlertTriangle className="text-amber-600 shrink-0" />
+      )}
+      <span className={ok ? "text-neutral-700" : "text-amber-800"}>{label}</span>
+      <span className={`ml-auto text-xs font-medium ${ok ? "text-emerald-700" : "text-amber-700"}`}>
+        {ok ? "Configured" : "Not set"}
+      </span>
+    </div>
+  );
+}
 
 export default function SettingsPage() {
   const [schema, setSchema] = useState<SettingField[]>([]);
+  const [smtp, setSmtp] = useState<SmtpStatus | null>(null);
   const [values, setValues] = useState<Record<string, string | number | boolean>>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -46,6 +56,7 @@ export default function SettingsPage() {
         if (cancelled) return;
         setSchema(d.schema);
         setValues(d.values);
+        setSmtp(d.smtp);
       })
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Failed to load settings"))
       .finally(() => !cancelled && setLoading(false));
@@ -72,6 +83,7 @@ export default function SettingsPage() {
       const d = await settingsApi.save(values);
       setValues(d.values);
       setSchema(d.schema);
+      setSmtp(d.smtp);
       setNotice("Settings saved.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to save settings");
@@ -94,7 +106,7 @@ export default function SettingsPage() {
     }
   };
 
-  const smtpReady = Boolean(String(values.smtp_host ?? "").trim());
+  const smtpReady = Boolean(smtp?.configured);
 
   return (
     <div className="max-w-3xl mx-auto px-8 py-10 space-y-8 font-sans">
@@ -159,6 +171,35 @@ export default function SettingsPage() {
             </section>
           ))}
 
+          {/* Read-only on purpose. The host, username and password live in
+              backend/.env and are never sent to the browser -- the API returns
+              this status object instead of the values, so there is nothing
+              here to leak or to edit into a broken state. */}
+          <section className="bg-white border border-neutral-200 rounded-lg shadow-sm overflow-hidden">
+            <div className="px-5 pt-5 pb-3 border-b border-neutral-100">
+              <h2 className="text-sm font-semibold text-neutral-900 flex items-center gap-2">
+                <FiServer className="text-neutral-400" />
+                Mail server
+              </h2>
+              <p className="text-neutral-500 text-xs mt-1 leading-relaxed">
+                Configured in <code className="text-neutral-600">backend/.env</code> and not shown
+                here. Edit that file and restart the backend to change it.
+              </p>
+            </div>
+            <div className="p-5 space-y-2">
+              <StatusRow ok={Boolean(smtp?.host_set)} label="Mail server" />
+              <StatusRow ok={Boolean(smtp?.credentials_set)} label="Credentials" />
+              <StatusRow
+                ok={Boolean(smtp?.configured)}
+                label={
+                  smtp?.configured
+                    ? `Ready to send${smtp.from_domain ? ` from @${smtp.from_domain}` : ""}`
+                    : "Not ready — summary emails cannot be sent"
+                }
+              />
+            </div>
+          </section>
+
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
@@ -174,7 +215,7 @@ export default function SettingsPage() {
               type="button"
               onClick={handleTest}
               disabled={testing || !smtpReady}
-              title={smtpReady ? undefined : "Set an SMTP host first"}
+              title={smtpReady ? undefined : "Configure the mail server in backend/.env first"}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded border border-neutral-300 hover:border-neutral-400 text-neutral-700 text-xs font-semibold transition-colors disabled:opacity-50 cursor-pointer"
             >
               <FiSend className="text-sm" />
@@ -183,7 +224,7 @@ export default function SettingsPage() {
 
             {!smtpReady && (
               <span className="text-xs text-amber-700">
-                No SMTP host set — summary emails cannot be sent yet.
+                Set SMTP_HOST (and credentials) in backend/.env, then restart the backend.
               </span>
             )}
           </div>
