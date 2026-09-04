@@ -370,7 +370,7 @@ export const settlementTypeApi = {
 export type SettingField = {
   key: string;
   label: string;
-  group: "mail" | "smtp";
+  group: "mail" | "smtp" | "verification";
   type: "str" | "int" | "bool";
   secret: boolean;
   default: string;
@@ -541,11 +541,13 @@ export const issuerAcquirerApi = {
   },
 };
 
-/** Issue category for a settlement that failed on a dropped connection. The
- *  far end may still have paid, so these must be verified with the aggregator
- *  before anyone retries them -- retrying blind risks paying twice. Must match
- *  the rule in the classification_rules table. */
-export const CONNECTION_RISK_CATEGORY = "Connection dropped / reset (network)";
+/** Issue category for a settlement whose remark makes the outcome ambiguous --
+ *  the far end may still have paid, so it must be verified with the aggregator
+ *  before anyone retries it. Which remarks land here is configurable on the
+ *  Settings page (verify_remark_patterns); this category name is deliberately
+ *  stable so changing the patterns never orphans ops decisions. Must match
+ *  VERIFY_CATEGORY in services/settings_service.py. */
+export const CONNECTION_RISK_CATEGORY = "Verify before retry";
 
 export const batchesApi = {
   upload: async (file: File): Promise<BatchWithDashboard> => {

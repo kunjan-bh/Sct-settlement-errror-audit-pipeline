@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { FiSave, FiSend, FiMail, FiServer, FiCheckCircle, FiAlertTriangle } from "react-icons/fi";
+import { FiSave, FiSend, FiMail, FiServer, FiCheckCircle, FiAlertTriangle, FiShield } from "react-icons/fi";
 import { settingsApi, SECRET_MASK, type SettingField, type SmtpStatus } from "../lib/api";
 
 /**
@@ -19,6 +19,13 @@ const GROUPS: { key: SettingField["group"]; title: string; blurb: string; icon: 
     blurb:
       "Who the batch summary comes from and goes to. These are the defaults — you can still change any of them in the preview before sending.",
     icon: FiMail,
+  },
+  {
+    key: "verification",
+    title: "Verify before retry",
+    blurb:
+      "Remarks that make a failure ambiguous — the far end may have paid anyway, so retrying risks paying twice. Comma-separated, matched anywhere in Remarks 1, case-insensitive. Saving rewrites the classification rules, so new batches pick it up at ingest; existing batches keep the category they were classified with.",
+    icon: FiShield,
   },
 ];
 

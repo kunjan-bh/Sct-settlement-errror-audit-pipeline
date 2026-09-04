@@ -13,6 +13,7 @@ from app.services.settings_service import (
     set_settings,
     settings_schema,
     smtp_status,
+    sync_verify_rules,
 )
 
 settings_bp = Blueprint("settings", __name__, url_prefix="/api/settings")
@@ -35,10 +36,16 @@ def update_settings():
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         return jsonify({"error": "Expected a JSON object of setting values."}), 400
+    values = set_settings(payload)
+    # The rules table is what classifies a row at ingest, so a changed pattern
+    # list has to be pushed into it here or editing the setting would look like
+    # it worked and change nothing.
+    verify = sync_verify_rules() if "verify_remark_patterns" in payload else None
     return jsonify({
-        "values": set_settings(payload),
+        "values": values,
         "schema": settings_schema(),
         "smtp": smtp_status(),
+        "verify": verify,
     })
 
 

@@ -70,6 +70,14 @@ _DEFINITIONS = {
     # configured there is never applied. This is where it goes instead: HTML,
     # appended below the body (and below the chart) on every summary email.
     "mail_signature_html": ("", "str", False),
+    # --- which remarks mean "do not retry until the aggregator confirms" ---
+    # Comma-separated substrings, matched case-insensitively against Remarks 1.
+    # A settlement that failed on a dropped connection may actually have paid at
+    # the far end, so retrying it blind risks paying the merchant twice. The
+    # list is editable because the next ambiguous wording should not need a code
+    # change -- add it here and it is picked up on the next classification.
+    "verify_remark_patterns": ("connection reset, connection was closed", "str", False),
+
     # --- SMTP transport ---
     "smtp_host": ("", "str", False),
     "smtp_port": ("587", "int", False),
@@ -278,6 +286,54 @@ def set_settings(updates: dict) -> dict:
     return public_settings()
 
 
+# The category those remarks are classified into. Stable regardless of what
+# patterns are configured, so the dashboard section and the extract filter can
+# key off it, and so renaming a pattern never orphans ops decisions.
+VERIFY_CATEGORY = "Verify before retry"
+
+
+def verify_remark_patterns() -> list[str]:
+    """The configured substrings, lowercased, blanks dropped."""
+    raw = get_settings()["verify_remark_patterns"] or ""
+    return [p.strip().lower() for p in raw.replace(";", ",").split(",") if p.strip()]
+
+
+def sync_verify_rules() -> dict:
+    """
+    Make the classification rules match the configured patterns.
+
+    The rules table is what actually classifies a row at ingest, so editing the
+    setting has to rewrite the rules or the change would do nothing. Only rules
+    carrying VERIFY_CATEGORY are touched -- everything hand-written stays put.
+
+    Priority 15 keeps these ahead of the generic decline rules (p90+) but behind
+    the specific "connection refused: interpay..." rule (p10), which names an
+    actual host and deserves its more precise category.
+    """
+    from app.models.classification_rule import ClassificationRule
+
+    wanted = verify_remark_patterns()
+    existing = ClassificationRule.query.filter_by(category=VERIFY_CATEGORY).all()
+    have = {r.pattern.lower(): r for r in existing}
+
+    added = removed = 0
+    for pattern in wanted:
+        if pattern in have:
+            have.pop(pattern)
+            continue
+        db.session.add(ClassificationRule(
+            side="sct", match_type="contains", pattern=pattern,
+            category=VERIFY_CATEGORY, priority=15, active=True,
+        ))
+        added += 1
+    for leftover in have.values():
+        db.session.delete(leftover)
+        removed += 1
+
+    db.session.commit()
+    return {"patterns": wanted, "rules_added": added, "rules_removed": removed}
+
+
 def settings_schema() -> list[dict]:
     """Field metadata so the Settings page can build its form from the API."""
     labels = {
@@ -287,6 +343,7 @@ def settings_schema() -> list[dict]:
         "mail_cc": ("Cc (comma-separated)", "mail"),
         "mail_subject": ("Default subject", "mail"),
         "mail_signature_html": ("Signature (HTML)", "mail"),
+        "verify_remark_patterns": ("Remarks needing verification (comma-separated)", "verification"),
         "smtp_host": ("SMTP host", "smtp"),
         "smtp_port": ("SMTP port", "smtp"),
         "smtp_username": ("SMTP username", "smtp"),
