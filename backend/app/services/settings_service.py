@@ -308,9 +308,17 @@ ANOMALY_CATEGORY = "Anomaly — filtered"
 # an actual host and deserves its more precise category. Anomaly is checked
 # first: a row that is known noise should be filed as noise even if its wording
 # would also match a verification pattern.
+# setting key -> (category, priority, side)
+#
+# side is NOT "sct" for either of these, and that matters more than it looks.
+# _build_partner_summary groups by partner_type and ignores error_side, while
+# the SCT summary selects on error_side == "sct" -- so an sct-sided row with a
+# real aggregator partner appears in BOTH, and ops works the same MID twice.
+# These failures are settlements to a partner, and the partner is who confirms
+# what happened, so they belong on the aggregator side.
 MANAGED_CATEGORIES = {
-    "anomaly_remark_patterns": (ANOMALY_CATEGORY, 14),
-    "verify_remark_patterns": (VERIFY_CATEGORY, 15),
+    "anomaly_remark_patterns": (ANOMALY_CATEGORY, 14, "aggregator"),
+    "verify_remark_patterns": (VERIFY_CATEGORY, 15, "aggregator"),
 }
 
 
@@ -342,7 +350,7 @@ def sync_managed_rules(setting_key: str | None = None) -> dict:
     for key in keys:
         if key not in MANAGED_CATEGORIES:
             continue
-        category, priority = MANAGED_CATEGORIES[key]
+        category, priority, side = MANAGED_CATEGORIES[key]
         wanted = remark_patterns(key)
         have = {
             r.pattern.lower(): r
@@ -355,7 +363,7 @@ def sync_managed_rules(setting_key: str | None = None) -> dict:
                 have.pop(pattern)
                 continue
             db.session.add(ClassificationRule(
-                side="sct", match_type="contains", pattern=pattern,
+                side=side, match_type="contains", pattern=pattern,
                 category=category, priority=priority, active=True,
             ))
             added += 1

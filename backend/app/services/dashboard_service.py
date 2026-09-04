@@ -107,7 +107,13 @@ def _build_totals(transactions: list[Transaction], issue_statuses: dict) -> dict
 def _build_partner_summary(transactions: list[Transaction], issue_statuses: dict, bucket: str, batch_id: int) -> list[dict]:
     by_partner: dict[str, list[Transaction]] = defaultdict(list)
     for t in transactions:
-        if t.partner_type == bucket:
+        # An SCT-sided failure is ours, not the partner's -- Interpay timing
+        # out or a branch we never mapped is nothing they can act on. It used
+        # to land here anyway, because this grouped on partner_type alone,
+        # which put the same MID on the partner's card AND in the SCT summary
+        # and had ops working it twice. It belongs in exactly one place, and
+        # that place is SCT.
+        if t.partner_type == bucket and t.error_side != "sct":
             by_partner[t.partner_name].append(t)
 
     result = []
