@@ -16,7 +16,7 @@ from app.models.batch import Batch
 from app.models.transaction import Transaction
 from app.models.issue_status import IssueStatus
 from app.services.dashboard_service import build_dashboard
-from app.services.excel_ingest import _find_header_index
+from app.services.excel_ingest import _find_header_index, _normalize_settlement_columns
 from app.services.status_utils import normalize_txn_status
 from app.services.error_classification import (
     ENTITY_TYPE_LABELS,
@@ -493,6 +493,14 @@ def _build_report_bytes(batch_id: int) -> bytes:
         try:
             h_idx = _find_header_index(batch.input_file_path)
             raw_df = pd.read_excel(batch.input_file_path, header=h_idx, nrows=1)
+            raw_df.columns = [str(c).strip() if pd.notna(c) else c for c in raw_df.columns]
+            # Normalise exactly as ingest did. The raw dump names columns
+            # merchant_code / crrn / amount, but ingest renamed those to MID /
+            # CRRN / Txn Amount before storing them, so reading the file's own
+            # headers here produced labels that match nothing in extra_data and
+            # every renamed column came out blank -- including the MID, amount,
+            # STAN and CRRN an aggregator needs to trace a transaction.
+            raw_df = _normalize_settlement_columns(raw_df)
             orig_headers = [str(c).strip() for c in raw_df.columns if pd.notna(c)]
         except Exception:
             pass
@@ -1572,6 +1580,14 @@ def generate_aggregator_report_bytes(
         try:
             h_idx = _find_header_index(batch.input_file_path)
             raw_df = pd.read_excel(batch.input_file_path, header=h_idx, nrows=1)
+            raw_df.columns = [str(c).strip() if pd.notna(c) else c for c in raw_df.columns]
+            # Normalise exactly as ingest did. The raw dump names columns
+            # merchant_code / crrn / amount, but ingest renamed those to MID /
+            # CRRN / Txn Amount before storing them, so reading the file's own
+            # headers here produced labels that match nothing in extra_data and
+            # every renamed column came out blank -- including the MID, amount,
+            # STAN and CRRN an aggregator needs to trace a transaction.
+            raw_df = _normalize_settlement_columns(raw_df)
             orig_headers = [str(c).strip() for c in raw_df.columns if pd.notna(c)]
         except Exception:
             pass
