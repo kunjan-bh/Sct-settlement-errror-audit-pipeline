@@ -236,10 +236,17 @@ def export_aggregator(batch_id, partner_name):
     """
     batch = Batch.query.get_or_404(batch_id)
     status_filter = request.args.get("status")
-    report_bytes = generate_aggregator_report_bytes(batch.id, partner_name, status_filter)
+    category_filter = request.args.get("category")
+    report_bytes = generate_aggregator_report_bytes(
+        batch.id, partner_name, status_filter, category_filter
+    )
 
     safe_partner = partner_name.replace("/", "_").replace(" ", "_")
     status_suffix = f"_{status_filter}" if status_filter else ""
+    # A category extract is sent to the aggregator to be checked, so the
+    # filename should say that rather than just naming the partner.
+    if category_filter:
+        status_suffix = "_verification"
     filename = f"Aggregator_Extract_{safe_partner}{status_suffix}_{batch.name}.xlsx"
     return send_file(
         io.BytesIO(report_bytes),

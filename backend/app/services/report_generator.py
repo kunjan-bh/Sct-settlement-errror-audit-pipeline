@@ -1529,11 +1529,22 @@ def generate_error_classification_bytes(batch_id: int) -> bytes:
     return output.getvalue()
 
 
-def generate_aggregator_report_bytes(batch_id: int, partner_name: str, status_filter: str = None) -> bytes:
+def generate_aggregator_report_bytes(
+    batch_id: int, partner_name: str, status_filter: str = None,
+    category_filter: str = None,
+) -> bytes:
     """
     Generates a targeted extract for a specific aggregator containing ONLY
     transactions whose resolved issue status is pending, failed, or lo_progress.
-    Optionally filters by the original transaction status.
+    Optionally filters by the original transaction status, and by issue
+    category.
+
+    category_filter is what the connection-risk extract uses. A settlement that
+    failed with "Connection reset" or "Connection was closed" may actually have
+    gone through at the far end -- we never got the answer -- so reprocessing it
+    blind risks paying the merchant twice. Those rows go to the aggregator to
+    confirm what really happened before anyone retries them, and this is the
+    file that gets sent.
     """
     batch = Batch.query.get_or_404(batch_id)
     transactions = Transaction.query.filter_by(batch_id=batch_id, partner_name=partner_name).all()
@@ -1583,6 +1594,8 @@ def generate_aggregator_report_bytes(batch_id: int, partner_name: str, status_fi
             continue  # already settled on a retry -- nothing to chase up
 
         txn_original_status = normalize_txn_status(txn.status)
+        if category_filter and (txn.error_category or "") != category_filter:
+            continue
         if status_filter and txn_original_status != status_filter:
             continue
 

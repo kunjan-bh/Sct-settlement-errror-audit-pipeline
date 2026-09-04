@@ -541,6 +541,12 @@ export const issuerAcquirerApi = {
   },
 };
 
+/** Issue category for a settlement that failed on a dropped connection. The
+ *  far end may still have paid, so these must be verified with the aggregator
+ *  before anyone retries them -- retrying blind risks paying twice. Must match
+ *  the rule in the classification_rules table. */
+export const CONNECTION_RISK_CATEGORY = "Connection dropped / reset (network)";
+
 export const batchesApi = {
   upload: async (file: File): Promise<BatchWithDashboard> => {
     const formData = new FormData();
@@ -570,8 +576,18 @@ export const batchesApi = {
   getErrorClassificationUrl: (id: number) =>
     `/api/batches/${id}/error-classification/export`,
 
-  getAggregatorReportUrl: (batchId: number, partnerName: string, status?: string) => 
-    `/api/batches/${batchId}/export-aggregator/${encodeURIComponent(partnerName)}${status ? `?status=${status}` : ""}`,
+  getAggregatorReportUrl: (
+    batchId: number,
+    partnerName: string,
+    status?: string,
+    category?: string
+  ) => {
+    const params = new URLSearchParams();
+    if (status) params.set("status", status);
+    if (category) params.set("category", category);
+    const qs = params.toString();
+    return `/api/batches/${batchId}/export-aggregator/${encodeURIComponent(partnerName)}${qs ? `?${qs}` : ""}`;
+  },
 
   updateIssue: (batchId: number, issueId: number, data: { status?: IssueStatusValue; comment?: string; mid_overrides?: Record<string, MidOverride> }) =>
     request<Issue>(`/batches/${batchId}/issues/${issueId}`, { method: "PATCH", body: JSON.stringify(data) }),

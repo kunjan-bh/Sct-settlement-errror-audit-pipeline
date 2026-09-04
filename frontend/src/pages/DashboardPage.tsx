@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { FiDownload, FiCheckCircle, FiTrash2, FiRefreshCw, FiMail } from "react-icons/fi";
-import { batchesApi, isIssueDecided, type BatchWithDashboard, type IssueStatusValue, type MidOverride, type PartnerSummary, type Issue } from "../lib/api";
+import { FiDownload, FiCheckCircle, FiTrash2, FiRefreshCw, FiMail, FiAlertTriangle } from "react-icons/fi";
+import { batchesApi, isIssueDecided, CONNECTION_RISK_CATEGORY, type BatchWithDashboard, type IssueStatusValue, type MidOverride, type PartnerSummary, type Issue } from "../lib/api";
 import { cacheGet, cacheSet, cacheInvalidate } from "../lib/cache";
 import StatCard from "../components/StatCard";
 import SendSummaryOverlay from "../components/SendSummaryOverlay";
@@ -158,7 +158,18 @@ export default function DashboardPage() {
   }));
 
   const renderPartnerSummary = (partner: PartnerSummary) => {
-    const failedRows = mapToFlatRows(partner.issues_failed, partner.partner_name);
+    // A settlement that failed on a dropped connection may actually have paid
+    // at the far end -- we never got the answer. Reprocessing one blind risks
+    // paying the merchant twice, so these are pulled out of the failed list
+    // into their own block with an extract to send the aggregator for
+    // confirmation. See CONNECTION_RISK_CATEGORY.
+    const isConnectionRisk = (i: Issue) => i.category === CONNECTION_RISK_CATEGORY;
+    const connectionIssues = partner.issues_failed.filter(isConnectionRisk);
+    const connectionRows = mapToFlatRows(connectionIssues, partner.partner_name);
+    const failedRows = mapToFlatRows(
+      partner.issues_failed.filter((i) => !isConnectionRisk(i)),
+      partner.partner_name
+    );
     const pendingRows = mapToFlatRows(partner.issues_pending, partner.partner_name);
     const loProgressRows = mapToFlatRows(partner.issues_lo_progress, partner.partner_name);
 
@@ -172,6 +183,39 @@ export default function DashboardPage() {
             <span className="text-xs font-medium bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">{partner.lo_progress} Lo Progress</span>
           </div>
         </div>
+
+        {connectionRows.length > 0 && (
+          <div className="space-y-2 border border-amber-200 bg-amber-50/40 rounded-lg p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-semibold text-amber-900 uppercase tracking-wider flex items-center gap-1.5">
+                  <FiAlertTriangle className="text-amber-600" />
+                  Verify before retry — connection dropped
+                </h4>
+                <p className="text-amber-800 text-xs mt-1 max-w-2xl">
+                  These failed on a dropped or reset connection, so the far end may have paid
+                  anyway. Confirm with {partner.partner_name} before reprocessing — retrying blind
+                  risks paying twice.
+                </p>
+              </div>
+              <a
+                href={batchesApi.getAggregatorReportUrl(
+                  id,
+                  partner.partner_name,
+                  undefined,
+                  CONNECTION_RISK_CATEGORY
+                )}
+                download
+                className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-amber-600 hover:bg-amber-700 text-white font-medium text-xs transition-colors cursor-pointer"
+                title={`Download the verification list to send ${partner.partner_name}`}
+              >
+                <FiDownload className="text-sm" />
+                Download for verification
+              </a>
+            </div>
+            <IssueTable rows={connectionRows} onUpdateIssue={handleUpdateIssue} emptyMessage="" />
+          </div>
+        )}
 
         {failedRows.length > 0 && (
           <div className="space-y-2">
