@@ -370,7 +370,7 @@ export const settlementTypeApi = {
 export type SettingField = {
   key: string;
   label: string;
-  group: "mail" | "smtp" | "verification";
+  group: "mail" | "smtp" | "verification" | "anomaly";
   type: "str" | "int" | "bool";
   secret: boolean;
   default: string;
@@ -548,6 +548,13 @@ export const issuerAcquirerApi = {
  *  stable so changing the patterns never orphans ops decisions. Must match
  *  VERIFY_CATEGORY in services/settings_service.py. */
 export const CONNECTION_RISK_CATEGORY = "Verify before retry";
+
+/** Issue category for settlement entries matching the configured anomaly
+ *  patterns — recurring sweeps and test rows that would otherwise bury the
+ *  failures someone has to act on. Pulled out of the failed list rather than
+ *  hidden, so the count is still visible and auditable. Must match
+ *  ANOMALY_CATEGORY in services/settings_service.py. */
+export const ANOMALY_CATEGORY = "Anomaly — filtered";
 
 export const batchesApi = {
   upload: async (file: File): Promise<BatchWithDashboard> => {

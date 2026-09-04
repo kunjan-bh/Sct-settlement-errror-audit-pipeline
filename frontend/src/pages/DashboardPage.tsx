@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { FiDownload, FiCheckCircle, FiTrash2, FiRefreshCw, FiMail, FiAlertTriangle } from "react-icons/fi";
-import { batchesApi, isIssueDecided, CONNECTION_RISK_CATEGORY, type BatchWithDashboard, type IssueStatusValue, type MidOverride, type PartnerSummary, type Issue } from "../lib/api";
+import { FiDownload, FiCheckCircle, FiTrash2, FiRefreshCw, FiMail, FiAlertTriangle, FiFilter } from "react-icons/fi";
+import { batchesApi, isIssueDecided, CONNECTION_RISK_CATEGORY, ANOMALY_CATEGORY, type BatchWithDashboard, type IssueStatusValue, type MidOverride, type PartnerSummary, type Issue } from "../lib/api";
 import { cacheGet, cacheSet, cacheInvalidate } from "../lib/cache";
 import StatCard from "../components/StatCard";
 import SendSummaryOverlay from "../components/SendSummaryOverlay";
@@ -164,10 +164,15 @@ export default function DashboardPage() {
     // into their own block with an extract to send the aggregator for
     // confirmation. See CONNECTION_RISK_CATEGORY.
     const isConnectionRisk = (i: Issue) => i.category === CONNECTION_RISK_CATEGORY;
+    const isAnomaly = (i: Issue) => i.category === ANOMALY_CATEGORY;
     const connectionIssues = partner.issues_failed.filter(isConnectionRisk);
     const connectionRows = mapToFlatRows(connectionIssues, partner.partner_name);
+    const anomalyRows = mapToFlatRows(
+      partner.issues_failed.filter(isAnomaly),
+      partner.partner_name
+    );
     const failedRows = mapToFlatRows(
-      partner.issues_failed.filter((i) => !isConnectionRisk(i)),
+      partner.issues_failed.filter((i) => !isConnectionRisk(i) && !isAnomaly(i)),
       partner.partner_name
     );
     const pendingRows = mapToFlatRows(partner.issues_pending, partner.partner_name);
@@ -222,6 +227,22 @@ export default function DashboardPage() {
             <h4 className="text-sm font-semibold text-neutral-800 uppercase tracking-wider">Failed Transactions</h4>
             <IssueTable rows={failedRows} onUpdateIssue={handleUpdateIssue} emptyMessage="" />
           </div>
+        )}
+
+        {anomalyRows.length > 0 && (
+          <details className="border border-neutral-200 bg-neutral-50/60 rounded-lg">
+            <summary className="cursor-pointer px-3 py-2 text-sm font-semibold text-neutral-600 uppercase tracking-wider flex items-center gap-1.5">
+              <FiFilter className="text-neutral-400" />
+              Anomalies — filtered out ({anomalyRows.length})
+            </summary>
+            <div className="p-3 pt-0 space-y-2">
+              <p className="text-neutral-500 text-xs">
+                Matched an anomaly pattern in Settings, so they are kept out of the failed list.
+                Collapsed rather than hidden — the count is still here and still auditable.
+              </p>
+              <IssueTable rows={anomalyRows} onUpdateIssue={handleUpdateIssue} emptyMessage="" />
+            </div>
+          </details>
         )}
 
         {pendingRows.length > 0 && (

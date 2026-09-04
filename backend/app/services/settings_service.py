@@ -78,6 +78,13 @@ _DEFINITIONS = {
     # change -- add it here and it is picked up on the next classification.
     "verify_remark_patterns": ("connection reset, connection was closed", "str", False),
 
+    # --- settlement entries to pull out of the normal failure queue ---
+    # Same mechanism, different purpose: these are not ambiguous, they are
+    # noise. Recurring sweeps and test entries that fail identically every day
+    # bury the failures someone actually has to act on. Empty by default --
+    # nothing is filtered until someone decides what counts as noise here.
+    "anomaly_remark_patterns": ("", "str", False),
+
     # --- SMTP transport ---
     "smtp_host": ("", "str", False),
     "smtp_port": ("587", "int", False),
@@ -290,48 +297,83 @@ def set_settings(updates: dict) -> dict:
 # patterns are configured, so the dashboard section and the extract filter can
 # key off it, and so renaming a pattern never orphans ops decisions.
 VERIFY_CATEGORY = "Verify before retry"
+ANOMALY_CATEGORY = "Anomaly — filtered"
+
+# setting key -> (category, priority). Category names are deliberately stable
+# and pattern-agnostic: they are the identity ops decisions hang off, and
+# renaming one after decisions accumulate means migrating them.
+#
+# Priority 14/15 keeps both ahead of the generic decline rules (p90+) but
+# behind the specific "connection refused: interpay..." rule (p10), which names
+# an actual host and deserves its more precise category. Anomaly is checked
+# first: a row that is known noise should be filed as noise even if its wording
+# would also match a verification pattern.
+MANAGED_CATEGORIES = {
+    "anomaly_remark_patterns": (ANOMALY_CATEGORY, 14),
+    "verify_remark_patterns": (VERIFY_CATEGORY, 15),
+}
 
 
-def verify_remark_patterns() -> list[str]:
-    """The configured substrings, lowercased, blanks dropped."""
-    raw = get_settings()["verify_remark_patterns"] or ""
+def remark_patterns(setting_key: str) -> list[str]:
+    """The configured substrings for one list, lowercased, blanks dropped."""
+    raw = get_settings().get(setting_key) or ""
     return [p.strip().lower() for p in raw.replace(";", ",").split(",") if p.strip()]
 
 
-def sync_verify_rules() -> dict:
+def verify_remark_patterns() -> list[str]:
+    return remark_patterns("verify_remark_patterns")
+
+
+def sync_managed_rules(setting_key: str | None = None) -> dict:
     """
     Make the classification rules match the configured patterns.
 
-    The rules table is what actually classifies a row at ingest, so editing the
+    The rules table is what actually classifies a row at ingest, so editing a
     setting has to rewrite the rules or the change would do nothing. Only rules
-    carrying VERIFY_CATEGORY are touched -- everything hand-written stays put.
+    carrying a managed category are touched -- everything hand-written stays
+    put.
 
-    Priority 15 keeps these ahead of the generic decline rules (p90+) but behind
-    the specific "connection refused: interpay..." rule (p10), which names an
-    actual host and deserves its more precise category.
+    Pass a setting key to sync just that list, or nothing to sync all of them.
     """
     from app.models.classification_rule import ClassificationRule
 
-    wanted = verify_remark_patterns()
-    existing = ClassificationRule.query.filter_by(category=VERIFY_CATEGORY).all()
-    have = {r.pattern.lower(): r for r in existing}
-
-    added = removed = 0
-    for pattern in wanted:
-        if pattern in have:
-            have.pop(pattern)
+    keys = [setting_key] if setting_key else list(MANAGED_CATEGORIES)
+    result = {}
+    for key in keys:
+        if key not in MANAGED_CATEGORIES:
             continue
-        db.session.add(ClassificationRule(
-            side="sct", match_type="contains", pattern=pattern,
-            category=VERIFY_CATEGORY, priority=15, active=True,
-        ))
-        added += 1
-    for leftover in have.values():
-        db.session.delete(leftover)
-        removed += 1
+        category, priority = MANAGED_CATEGORIES[key]
+        wanted = remark_patterns(key)
+        have = {
+            r.pattern.lower(): r
+            for r in ClassificationRule.query.filter_by(category=category).all()
+        }
+
+        added = removed = 0
+        for pattern in wanted:
+            if pattern in have:
+                have.pop(pattern)
+                continue
+            db.session.add(ClassificationRule(
+                side="sct", match_type="contains", pattern=pattern,
+                category=category, priority=priority, active=True,
+            ))
+            added += 1
+        for leftover in have.values():
+            db.session.delete(leftover)
+            removed += 1
+        result[key] = {
+            "category": category, "patterns": wanted,
+            "rules_added": added, "rules_removed": removed,
+        }
 
     db.session.commit()
-    return {"patterns": wanted, "rules_added": added, "rules_removed": removed}
+    return result
+
+
+def sync_verify_rules() -> dict:
+    """Backwards-compatible wrapper for the verify list alone."""
+    return sync_managed_rules("verify_remark_patterns").get("verify_remark_patterns", {})
 
 
 def settings_schema() -> list[dict]:
@@ -344,6 +386,7 @@ def settings_schema() -> list[dict]:
         "mail_subject": ("Default subject", "mail"),
         "mail_signature_html": ("Signature (HTML)", "mail"),
         "verify_remark_patterns": ("Remarks needing verification (comma-separated)", "verification"),
+        "anomaly_remark_patterns": ("Remarks to treat as anomalies (comma-separated)", "anomaly"),
         "smtp_host": ("SMTP host", "smtp"),
         "smtp_port": ("SMTP port", "smtp"),
         "smtp_username": ("SMTP username", "smtp"),

@@ -13,7 +13,7 @@ from app.services.settings_service import (
     set_settings,
     settings_schema,
     smtp_status,
-    sync_verify_rules,
+    sync_managed_rules,
 )
 
 settings_bp = Blueprint("settings", __name__, url_prefix="/api/settings")
@@ -40,7 +40,12 @@ def update_settings():
     # The rules table is what classifies a row at ingest, so a changed pattern
     # list has to be pushed into it here or editing the setting would look like
     # it worked and change nothing.
-    verify = sync_verify_rules() if "verify_remark_patterns" in payload else None
+    # Sync whichever pattern lists this request actually touched.
+    synced = {}
+    for key in ("verify_remark_patterns", "anomaly_remark_patterns"):
+        if key in payload:
+            synced.update(sync_managed_rules(key))
+    verify = synced or None
     return jsonify({
         "values": values,
         "schema": settings_schema(),
