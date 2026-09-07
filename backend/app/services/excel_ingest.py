@@ -67,6 +67,27 @@ KNOWN_COLUMN_MAP = {
 }
 
 
+def unique_batch_name(desired: str) -> str:
+    """
+    `desired` if free, otherwise the same with _2, _3... appended.
+
+    Batch names are used as the email subject line context, the chart title and
+    the report filename, so two batches sharing one name makes the reports
+    ambiguous rather than merely untidy. Suffixing keeps whatever the operator
+    typed recognisable instead of rejecting the upload over a name clash.
+    """
+    desired = (desired or "").strip()
+    if not desired:
+        return desired
+    if not Batch.query.filter_by(name=desired).first():
+        return desired
+
+    n = 2
+    while Batch.query.filter_by(name=f"{desired}_{n}").first():
+        n += 1
+    return f"{desired}_{n}"
+
+
 def _next_batch_name(base_date: date) -> str:
     """
     Batch_YYYY_MM_DD, with _2/_3... appended if a batch already exists for
@@ -174,7 +195,7 @@ def _normalize_settled_by(value):
     }.get(key, text)
 
 
-def ingest_excel(file_path: str, batch_date: date | None = None) -> Batch:
+def ingest_excel(file_path: str, batch_date: date | None = None, name: str | None = None) -> Batch:
     """
     Reads the Excel at file_path, creates a Batch, classifies every row,
     and persists Transaction + IssueStatus rows. Returns the Batch.
@@ -187,8 +208,12 @@ def ingest_excel(file_path: str, batch_date: date | None = None) -> Batch:
     df = read_settlement_dataframe(file_path)
 
     batch_date = batch_date or date.today()
+    # An operator-supplied name wins over the date-derived default. A batch
+    # often covers several days of errors at once, and "Batch_2026_09_04" then
+    # names only the day it was uploaded -- which is the name that goes out in
+    # the summary email.
     batch = Batch(
-        name=_next_batch_name(batch_date),
+        name=unique_batch_name(name) or _next_batch_name(batch_date),
         status="open",
         input_file_path=file_path,
     )

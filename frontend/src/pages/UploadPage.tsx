@@ -21,6 +21,10 @@ export default function UploadPage() {
   const [stage, setStage] = useState<Stage>("idle");
   const [dragActive, setDragActive] = useState(false);
   const [file, setFile] = useState<File | null>(null);
+  // Optional override for the auto-generated Batch_YYYY_MM_DD name. A batch
+  // often covers several days, and this name is what the summary email says
+  // the report is for.
+  const [batchName, setBatchName] = useState("");
   const [messageIndex, setMessageIndex] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [batchId, setBatchId] = useState<number | null>(null);
@@ -57,7 +61,7 @@ export default function UploadPage() {
     }, 900);
 
     try {
-      const result = await batchesApi.upload(file);
+      const result = await batchesApi.upload(file, batchName);
       clearInterval(interval);
       setMessageIndex(PROCESSING_MESSAGES.length - 1);
       setBatchId(result.batch.id);
@@ -127,6 +131,21 @@ export default function UploadPage() {
             </div>
 
             {error && <p className="text-red-600 text-sm mt-3">{error}</p>}
+
+            {file && stage === "selected" && (
+              <label className="block text-left text-xs text-neutral-500 space-y-1 mb-3">
+                Batch name <span className="text-neutral-400">— optional</span>
+                <input
+                  value={batchName}
+                  onChange={(e) => setBatchName(e.target.value)}
+                  placeholder="e.g. Errors 1-4 Sep 2026 — defaults to today's date"
+                  className="w-full border border-neutral-300 rounded px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-neutral-400"
+                />
+                <span className="block text-neutral-400">
+                  Used in the summary email and the report filename. Editable later.
+                </span>
+              </label>
+            )}
 
             {file && stage === "selected" && (
               <motion.button

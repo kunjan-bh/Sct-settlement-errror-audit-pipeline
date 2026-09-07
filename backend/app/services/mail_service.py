@@ -15,6 +15,7 @@ picture is the summary, the workbook is the evidence behind it.
 """
 import base64
 import os
+import re
 import smtplib
 from email.message import EmailMessage
 from email.utils import formataddr, make_msgid
@@ -178,6 +179,12 @@ def _escape(text) -> str:
     )
 
 
+def report_attachment_name(batch_name: str) -> str:
+    """Attachment filename for a batch, safe for any mail client to save."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", batch_name or "batch").strip("_")
+    return f"SmartQR_Settlement_Report_{safe}.xlsx"
+
+
 def report_attachment(batch_id: int, batch_name: str) -> tuple[bytes, str]:
     """
     The same workbook the Download Full Report button produces, so the mailed
@@ -189,7 +196,12 @@ def report_attachment(batch_id: int, batch_name: str) -> tuple[bytes, str]:
     """
     from app.services.report_generator import generate_report_bytes
 
-    return generate_report_bytes(batch_id), f"SmartQR_Settlement_Report_{batch_name}.xlsx"
+    # Batch names are operator-typed now ("Errors 1-4 Sep 2026"), so spaces and
+    # punctuation reach the attachment filename. Some mail clients mangle those
+    # on save, so tidy it here rather than constraining what ops can call a
+    # batch.
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", batch_name or str(batch_id)).strip("_")
+    return generate_report_bytes(batch_id), f"SmartQR_Settlement_Report_{safe}.xlsx"
 
 
 def _logo_bytes() -> tuple[bytes, str]:
@@ -245,7 +257,7 @@ def build_batch_email(batch_id: int) -> dict:
         "signature_html": settings["mail_signature_html"],
         "signature_logo_base64": _logo_base64(),
         "attach_report": True,
-        "report_filename": f"SmartQR_Settlement_Report_{batch.name}.xlsx",
+        "report_filename": report_attachment_name(batch.name),
         "stats": stats,
         "smtp_configured": bool(settings["smtp_host"]),
     }

@@ -28,6 +28,11 @@ export default function DashboardPage() {
   // fired by Finish itself: the draft is built from the batch's final state,
   // and ops often wants to adjust notes or statuses before mailing anyone.
   const [showSendSummary, setShowSendSummary] = useState(false);
+  // Inline rename. The batch name is what the summary email says the report is
+  // for, and the range a batch covers is often only clear once someone has
+  // looked at it -- so it stays editable after upload, not just at it.
+  const [renaming, setRenaming] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
   const [tab, setTab] = useState<TabKey>("solve");
 
   const cacheKey = `batch:${id}`;
@@ -277,7 +282,41 @@ export default function DashboardPage() {
     <div className="max-w-6xl mx-auto px-8 py-10 space-y-8 font-sans">
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-neutral-200 pb-6">
         <div>
-          <h1 className="text-2xl font-semibold text-neutral-900 tracking-tight">{batch.name}</h1>
+          {renaming ? (
+            <input
+              autoFocus
+              value={nameDraft}
+              onChange={(e) => setNameDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                if (e.key === "Escape") setRenaming(false);
+              }}
+              onBlur={async () => {
+                const next = nameDraft.trim();
+                setRenaming(false);
+                if (!next || next === batch.name) return;
+                try {
+                  await batchesApi.rename(id, next);
+                  cacheInvalidate(cacheKey);
+                  await load({ force: true });
+                } catch (e) {
+                  alert(e instanceof Error ? e.message : "Failed to rename batch");
+                }
+              }}
+              className="text-2xl font-semibold text-neutral-900 tracking-tight border-b border-neutral-300 focus:outline-none focus:border-neutral-800 bg-transparent w-full"
+            />
+          ) : (
+            <h1
+              onClick={() => {
+                setNameDraft(batch.name);
+                setRenaming(true);
+              }}
+              title="Click to rename — this name goes out in the summary email"
+              className="text-2xl font-semibold text-neutral-900 tracking-tight cursor-text hover:text-neutral-600 transition-colors"
+            >
+              {batch.name}
+            </h1>
+          )}
           <p className="text-neutral-500 text-sm mt-1">
             {new Date(batch.created_at).toLocaleString()} ·{" "}
             <span className={isFinished ? "text-emerald-600 font-semibold" : "text-amber-600 font-semibold"}>

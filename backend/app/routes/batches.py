@@ -13,7 +13,7 @@ from flask import Blueprint, request, jsonify, current_app, send_file
 from app.extensions import db
 from app.models.batch import Batch
 from app.models.issue_status import IssueStatus
-from app.services.excel_ingest import ingest_excel
+from app.services.excel_ingest import ingest_excel, unique_batch_name
 from app.services.dashboard_service import build_dashboard
 from app.services.error_classification import build_error_classification
 from app.services.mail_service import MailError, build_batch_email, send_batch_email
@@ -54,8 +54,12 @@ def upload_batch():
     save_path = os.path.join(current_app.config["UPLOAD_DIR"], safe_name)
     file.save(save_path)
 
+    # Optional: the operator can name the batch at upload time, since one
+    # batch often covers several days and the default names only today.
+    custom_name = (request.form.get("name") or "").strip()
+
     try:
-        batch = ingest_excel(save_path)
+        batch = ingest_excel(save_path, name=custom_name or None)
     except Exception as e:
         # Ingestion failed partway -- surface the real error instead of a
         # generic 500, since "which column was missing" is exactly what
@@ -105,6 +109,27 @@ def finish_batch(batch_id):
     batch.status = "finished"
     batch.finished_at = datetime.utcnow()
     db.session.commit()
+    return jsonify(batch.to_dict())
+
+
+@batches_bp.patch("/<int:batch_id>/name")
+def rename_batch(batch_id):
+    """
+    Rename a batch. The name is what the summary email says the report is for,
+    so it stays editable after upload -- the range a batch actually covers is
+    often only obvious once someone has looked at it.
+    """
+    batch = Batch.query.get_or_404(batch_id)
+    payload = request.get_json(silent=True) or {}
+    desired = (payload.get("name") or "").strip()
+    if not desired:
+        return jsonify({"error": "Name cannot be empty."}), 400
+    if len(desired) > 120:
+        return jsonify({"error": "Name is too long (max 120 characters)."}), 400
+
+    if desired != batch.name:
+        batch.name = unique_batch_name(desired)
+        db.session.commit()
     return jsonify(batch.to_dict())
 
 

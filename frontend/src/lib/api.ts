@@ -557,9 +557,13 @@ export const CONNECTION_RISK_CATEGORY = "Verify before retry";
 export const ANOMALY_CATEGORY = "Anomaly — filtered";
 
 export const batchesApi = {
-  upload: async (file: File): Promise<BatchWithDashboard> => {
+  /** `name` is optional. A batch often covers several days of errors, and the
+   *  default names only the upload date — which is what the summary email
+   *  says the report is for. */
+  upload: async (file: File, name?: string): Promise<BatchWithDashboard> => {
     const formData = new FormData();
     formData.append("file", file);
+    if (name?.trim()) formData.append("name", name.trim());
     const res = await fetch("/api/batches/upload", { method: "POST", body: formData });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -571,6 +575,9 @@ export const batchesApi = {
   list: () => request<Batch[]>("/batches"),
 
   get: (id: number) => request<BatchWithDashboard>(`/batches/${id}`),
+
+  rename: (id: number, name: string) =>
+    request<Batch>(`/batches/${id}/name`, { method: "PATCH", body: JSON.stringify({ name }) }),
 
   updateNotes: (id: number, notes: string) =>
     request<Batch>(`/batches/${id}/notes`, { method: "PATCH", body: JSON.stringify({ notes }) }),
