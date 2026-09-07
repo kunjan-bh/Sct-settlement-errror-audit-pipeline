@@ -25,7 +25,7 @@ from app.models.batch import Batch
 from app.models.transaction import Transaction
 from app.models.issue_status import IssueStatus
 from app.services.classification_service import RuleEngine, PartnerResolver
-from app.services.status_utils import normalize_txn_status
+from app.services.status_utils import issue_partner_key, normalize_txn_status
 from app.services.retry_matching import parse_amount, parse_txn_datetime, reconcile_retries
 
 # The same export also ships as a raw snake_case dump (header on row 1, no
@@ -273,7 +273,7 @@ def ingest_excel(file_path: str, batch_date: date | None = None, name: str | Non
         # docstring) -- IssueStatus groups by error_side, since that's
         # "whose fault", which is what ops actually resolves.
         if txn_status != "success":
-            issue_key = (batch.id, result.side, partner_name if result.side != "sct" else None, result.category, txn_status)
+            issue_key = (batch.id, result.side, issue_partner_key(partner_name, bucket), result.category, txn_status)
             if issue_key not in issue_cache:
                 issue_cache[issue_key] = IssueStatus(
                     batch_id=batch.id,

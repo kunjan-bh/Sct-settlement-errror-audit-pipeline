@@ -19,7 +19,7 @@ from app.models.batch import Batch
 from app.models.transaction import Transaction
 from app.models.issue_status import IssueStatus
 from app.services.error_classification import _entity_of
-from app.services.status_utils import ISSUE_BUCKETS, normalize_txn_status
+from app.services.status_utils import ISSUE_BUCKETS, issue_partner_key, normalize_txn_status
 
 BUCKET_CHOICES = ("day", "week", "month")
 
@@ -172,7 +172,7 @@ def build_analytics(
         category = row.error_category or "Unclassified"
 
         issue_key = (
-            row.batch_id, side, row.partner_name if side != "sct" else None,
+            row.batch_id, side, issue_partner_key(row.partner_name, row.partner_type),
             category, txn_status,
         )
         issue_obj = issue_status_map.get(issue_key)

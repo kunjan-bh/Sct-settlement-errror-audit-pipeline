@@ -27,7 +27,7 @@ from app.models.transaction import Transaction
 from app.services.analytics_service import EXCLUDED_OPS_STATUS, SOLVED_OPS_STATUSES
 from app.services.chart_image import render_entity_volume_png, render_error_resolution_png
 from app.services.settings_service import get_settings, signature_logo_path
-from app.services.status_utils import normalize_txn_status
+from app.services.status_utils import issue_partner_key, normalize_txn_status
 
 
 class MailError(Exception):
@@ -56,7 +56,8 @@ def batch_summary_numbers(batch_id: int) -> dict:
     rows = (
         db.session.query(
             Transaction.status, Transaction.error_side, Transaction.error_category,
-            Transaction.partner_name, Transaction.mid, Transaction.retry_resolved,
+            Transaction.partner_name, Transaction.partner_type,
+            Transaction.mid, Transaction.retry_resolved,
         )
         .filter(Transaction.batch_id == batch_id)
         .all()
@@ -85,7 +86,7 @@ def batch_summary_numbers(batch_id: int) -> dict:
         side = row.error_side or "unknown"
         category = row.error_category or "Unclassified"
         issue = issue_map.get(
-            (side, row.partner_name if side != "sct" else None, category, txn_status)
+            (side, issue_partner_key(row.partner_name, row.partner_type), category, txn_status)
         )
 
         override = None
@@ -102,7 +103,11 @@ def batch_summary_numbers(batch_id: int) -> dict:
 
         if txn_status in status_breakdown:
             status_breakdown[txn_status] += 1
-        entity = "SCT" if side == "sct" else (row.partner_name or "No Aggregator")
+        # Same bucketing as the dashboard cards, so a bar and a card cannot
+        # disagree about who owns a failure.
+        entity = issue_partner_key(row.partner_name, row.partner_type) or (
+            "No Aggregator" if row.partner_name == "No Aggregator" else "SCT"
+        )
         per_entity[entity] = per_entity.get(entity, 0) + 1
         if eff in SOLVED_OPS_STATUSES:
             solved += 1

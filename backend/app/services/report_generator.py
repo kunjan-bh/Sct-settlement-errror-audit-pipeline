@@ -17,7 +17,7 @@ from app.models.transaction import Transaction
 from app.models.issue_status import IssueStatus
 from app.services.dashboard_service import build_dashboard
 from app.services.excel_ingest import _find_header_index, _normalize_settlement_columns
-from app.services.status_utils import normalize_txn_status
+from app.services.status_utils import issue_partner_key, normalize_txn_status
 from app.services.error_classification import (
     ENTITY_TYPE_LABELS,
     SIDE_LABELS,
@@ -347,7 +347,7 @@ def _build_report_bytes(batch_id: int) -> bytes:
         category = txn.error_category or "Unclassified"
         txn_original_status = normalize_txn_status(txn.status)
 
-        issue_obj = issue_status_map.get((side, txn.partner_name if side != "sct" else None, category, txn_original_status))
+        issue_obj = issue_status_map.get((side, issue_partner_key(txn.partner_name, txn.partner_type), category, txn_original_status))
         
         override_obj = None
         if issue_obj and issue_obj.mid_overrides and txn.mid in issue_obj.mid_overrides:
@@ -548,7 +548,7 @@ def _build_report_bytes(batch_id: int) -> bytes:
 
         # Appended columns lookup
         txn_original_status = normalize_txn_status(txn.status)
-        issue_obj = issue_status_map.get((txn.error_side, txn.partner_name if txn.error_side != "sct" else None, txn.error_category, txn_original_status))
+        issue_obj = issue_status_map.get((txn.error_side, issue_partner_key(txn.partner_name, txn.partner_type), txn.error_category, txn_original_status))
 
         override_obj = None
         if issue_obj and issue_obj.mid_overrides and txn.mid in issue_obj.mid_overrides:
@@ -1616,7 +1616,7 @@ def generate_aggregator_report_bytes(
             continue
 
         extra = txn.extra_data or {}
-        issue_obj = issue_status_map.get((txn.error_side, txn.partner_name if txn.error_side != "sct" else None, txn.error_category, txn_original_status))
+        issue_obj = issue_status_map.get((txn.error_side, issue_partner_key(txn.partner_name, txn.partner_type), txn.error_category, txn_original_status))
         
         override_obj = None
         if issue_obj and issue_obj.mid_overrides and txn.mid in issue_obj.mid_overrides:

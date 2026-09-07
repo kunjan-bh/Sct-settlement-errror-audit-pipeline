@@ -56,3 +56,28 @@ def normalize_txn_status(raw) -> str:
 def is_error_status(raw) -> bool:
     """True for rows that represent something ops has to look at."""
     return normalize_txn_status(raw) != "success"
+
+
+# Partner types that get their own card in the dashboard. Anything else --
+# an unmapped MID, a bare "No Aggregator" -- falls to the SCT summary.
+PARTNER_CARD_TYPES = ("aggregator", "bank_wallet")
+
+
+def issue_partner_key(partner_name, partner_type):
+    """
+    The `partner_name` half of an IssueStatus identity, for a transaction.
+
+    This is deliberately keyed on partner_type rather than error_side. Partner
+    cards took over every failure for their partner regardless of whose fault
+    it was, because ops chases an Interpay timeout with the aggregator anyway.
+    The old rule -- "no partner if the side is sct" -- predates that, and filed
+    the operator's decisions under ('sct', None, ...) while the dashboard read
+    and wrote ('sct', 'Global IME Bank Ltd', ...). Those two keys drift apart
+    the moment anyone marks something solved, and the mail and the report then
+    quietly report a batch as unfinished that ops had finished.
+
+    Must stay in step with _build_partner_summary / _build_sct_summary in
+    dashboard_service: the dashboard is what the operator actually clicks, so
+    it defines the identity and everything else follows it.
+    """
+    return partner_name if partner_type in PARTNER_CARD_TYPES else None
