@@ -135,6 +135,7 @@ def materialise_session(batch_id: int) -> dict:
     resolver = PartnerResolver.load()
     issues: dict[tuple, IssueStatus] = {}
     overrides: dict[tuple, dict] = {}
+    comments: dict[tuple, dict] = {}
     txns = []
 
     for r in rows:
@@ -183,6 +184,7 @@ def materialise_session(batch_id: int) -> dict:
                 category=key[2], txn_status=key[3], status="pending", mid_overrides={},
             )
             overrides[key] = {}
+            comments[key] = {}
 
         decision = by_key.get(str(r.get("id")))
         if decision is None and scopes:
@@ -198,26 +200,36 @@ def materialise_session(batch_id: int) -> dict:
                 if decision is not None:
                     break
 
-        if decision is not None:
-            # The decision was taken per settlement; IssueStatus groups them.
-            # Recording it per MID keeps two different decisions in one group
-            # instead of letting one silently win.
-            overrides[key][mid] = {"status": decision.status, "comment": decision.comment}
-            if decision.comment and not issues[key].comment:
+        # Every failure in the group gets an effective status, decided or not.
+        # Knowing the undecided ones is what lets the card take a real status
+        # below instead of sitting at pending with a pile of overrides.
+        overrides[key][mid] = decision.status if decision is not None else "pending"
+        if decision is not None and decision.comment:
+            comments[key][mid] = decision.comment
+            if not issues[key].comment:
                 issues[key].comment = decision.comment
 
     db.session.bulk_save_objects(txns)
     for key, issue in issues.items():
-        issue.mid_overrides = overrides[key]
-        statuses = {v.get("status") for v in overrides[key].values()}
-        # Lift to the card only when every failure in the group was decided the
-        # same way; a partly-worked group stays pending with its overrides.
-        group_size = sum(1 for t in txns if (
-            t.error_side, issue_partner_key(t.partner_name, t.partner_type),
-            t.error_category, normalize_txn_status(t.status)
-        ) == key)
-        if len(statuses) == 1 and len(overrides[key]) == group_size:
-            issue.status = statuses.pop()
+        per_mid = overrides[key]
+
+        # The card takes whatever most of its MIDs are, and only the ones that
+        # differ get an override. Lifting only on unanimity left a group where
+        # four of five were solved sitting at "pending" behind four overrides,
+        # so the cards read pending all day however much had been done.
+        counts: dict[str, int] = {}
+        for status in per_mid.values():
+            counts[status] = counts.get(status, 0) + 1
+        # Ties go to the more advanced status: a group half solved reads better
+        # as solved-with-exceptions than as pending-with-exceptions.
+        rank = {"pending": 0, "in_progress": 1, "exclude": 2, "solved": 3}
+        issue.status = max(counts, key=lambda s: (counts[s], rank.get(s, 0)))
+
+        issue.mid_overrides = {
+            mid: {"status": status, "comment": comments[key].get(mid)}
+            for mid, status in per_mid.items()
+            if status != issue.status
+        }
         db.session.add(issue)
 
     batch.finished_at = batch.finished_at or datetime.utcnow()
