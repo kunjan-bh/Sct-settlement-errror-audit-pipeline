@@ -744,6 +744,8 @@ export interface DisputeTotals {
   reprocessed_count: number;
   solved_count: number;
   in_progress_count: number;
+  pending_count: number;
+  row_excluded_count: number;
   open_count: number;
 }
 

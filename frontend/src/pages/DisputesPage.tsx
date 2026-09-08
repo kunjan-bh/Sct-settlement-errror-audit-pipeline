@@ -29,7 +29,7 @@ function isoDaysAgo(days: number) {
   return d.toISOString().slice(0, 10);
 }
 
-type Filter = "held" | "risk";
+type Filter = "open" | "risk" | "in_progress" | "solved" | "excluded";
 
 const OP_ACTIONS: { key: DisputeOpStatus; label: string; on: string }[] = [
   { key: "in_progress", label: "In Progress", on: "bg-blue-600 border-blue-600 text-white" },
@@ -246,7 +246,7 @@ export default function DisputesPage() {
   const [status, setStatus] = useState<CoreDbStatus | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<Filter>("held");
+  const [filter, setFilter] = useState<Filter>("open");
   const [search, setSearch] = useState("");
   const [entity, setEntity] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
@@ -303,11 +303,33 @@ export default function DisputesPage() {
       await disputesApi.setStatus(key, {
         status, mid: d.mid, crrn: d.crrn, amount: d.amount,
       });
-      setData((prev) => prev && {
-        ...prev,
-        disputes: prev.disputes.map((x) =>
+      setData((prev) => {
+        if (!prev) return prev;
+        const disputes = prev.disputes.map((x) =>
           x.id === d.id ? { ...x, op_status: status, op_scope: null } : x
-        ),
+        );
+        // Recount locally so the tab labels move with the row. Re-fetching
+        // would re-read the switch (~10s) and lose your place in the list.
+        const counted = disputes.filter(
+          (x) => !x.reprocessed_ok && !x.likely_settled &&
+                 !(x.settled_clear && !x.negative_hold) &&
+                 !(x.op_status === "exclude" && x.op_scope)
+        );
+        const n = (s: string) => counted.filter((x) => x.op_status === s).length;
+        return {
+          ...prev,
+          disputes,
+          totals: {
+            ...prev.totals,
+            pending_count: n("pending"),
+            in_progress_count: n("in_progress"),
+            solved_count: n("solved"),
+            row_excluded_count: n("exclude"),
+            at_risk_count: counted.filter(
+              (x) => x.double_pay_risk && (x.op_status === "pending" || x.op_status === "in_progress")
+            ).length,
+          },
+        };
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not save that decision");
@@ -557,7 +579,8 @@ export default function DisputesPage() {
           <Kpi label="Money held" value={shortMoney(t.held_amount)}
             sub={`${t.held_merchants} merchant${t.held_merchants === 1 ? "" : "s"} — what the holds cover`} tone="amber" />
           <Kpi label="Disputes" value={t.held_count.toLocaleString()}
-            sub={`${t.open_count} open · ${t.solved_count} solved`} tone="amber" />
+            sub={`${t.pending_count} open · ${t.in_progress_count} in progress · ${t.solved_count} solved`}
+            tone="amber" />
           <Kpi label="Double-pay risk" value={t.at_risk_count.toLocaleString()}
             sub={shortMoney(t.at_risk_amount)} tone={t.at_risk_count ? "red" : "neutral"} />
           {!!t.negative_hold_count && (
@@ -571,8 +594,11 @@ export default function DisputesPage() {
 
       <div className="flex gap-1 border-b border-neutral-200">
         {([
-          ["held", `Disputes${t ? ` (${t.held_count})` : ""}`],
+          ["open", `Disputes${t ? ` (${t.pending_count})` : ""}`],
           ["risk", `Double-pay risk${t ? ` (${t.at_risk_count})` : ""}`],
+          ["in_progress", `In Progress${t ? ` (${t.in_progress_count})` : ""}`],
+          ["solved", `Solved${t ? ` (${t.solved_count})` : ""}`],
+          ["excluded", `Excluded${t ? ` (${t.row_excluded_count})` : ""}`],
         ] as [Filter, string][]).map(([key, label]) => (
           <button key={key} type="button" onClick={() => setFilter(key)}
             className={`px-3.5 py-2 text-xs font-semibold border-b-2 -mb-px transition-colors cursor-pointer ${
@@ -598,9 +624,12 @@ export default function DisputesPage() {
 
       {!loading && !rows.length && (
         <p className="text-neutral-500 text-sm py-10">
-          {filter === "held"
-            ? "No failed settlement in this range has money still held on the merchant."
-            : "Nothing matches."}
+          {filter === "open"
+            ? "Nothing outstanding — every dispute in this range has been actioned."
+            : filter === "in_progress" ? "Nothing is in progress."
+              : filter === "solved" ? "Nothing solved yet in this range."
+                : filter === "excluded" ? "You have not excluded any individual dispute."
+                  : "Nothing matches."}
         </p>
       )}
 

@@ -198,7 +198,15 @@ def _allocate_holds(disputes: list[dict]) -> None:
     for rows in by_mid.values():
         # Excluded and already-reprocessed rows do not consume the pot; they
         # are not being chased.
-        live = [d for d in rows if d["op_status"] != "exclude" and not d["reprocessed_ok"]]
+        live = [
+            d for d in rows
+            if not d["reprocessed_ok"]
+            # Entity-level exclusions (a whole wallet) drop out entirely. A
+            # row someone excluded by hand still holds money, so it still
+            # consumes the pot and still gets its flags -- it belongs in the
+            # Excluded section, not nowhere.
+            and not (d["op_status"] == "exclude" and d["op_scope"])
+        ]
         for d in rows:
             d.setdefault("held", False)
             d.setdefault("partially_held", False)
@@ -222,8 +230,17 @@ def _allocate_holds(disputes: list[dict]) -> None:
         if pot <= 0:
             continue
 
+        # Anything an operator has already ruled on keeps its claim on the pot,
+        # ahead of date order. Without this a failure arriving this afternoon
+        # takes the balance from one someone spent the morning investigating,
+        # and that case disappears off the list mid-investigation.
         remaining = pot
-        for d in sorted(live, key=lambda x: x["date_time"], reverse=True):
+        ordered = sorted(
+            live,
+            key=lambda x: (x["op_status"] != "pending", x["date_time"]),
+            reverse=True,
+        )
+        for d in ordered:
             if remaining <= 0:
                 d["likely_settled"] = True
                 continue
@@ -344,24 +361,62 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
     # Excluded and already-reprocessed settlements are not outstanding work:
     # one was judged not ours to chase, the other already went through. Both
     # are still returned and counted separately so nothing vanishes silently.
-    excluded = [d for d in disputes if d["op_status"] == "exclude"]
-    reprocessed = [d for d in disputes if d["reprocessed_ok"] and d["op_status"] != "exclude"]
+    # Two different things wear the "exclude" status. A standing rule about a
+    # wallet removes its rows from the page; a decision about one settlement
+    # files it under Excluded where it stays visible.
+    entity_excluded = [d for d in disputes if d["op_status"] == "exclude" and d["op_scope"]]
+    excluded = entity_excluded
+    # These three count what was ruled out and is therefore NOT listed. A row
+    # someone has ruled on is listed in its own section, so counting it here
+    # too would double it and the figures would stop adding up.
+    def _ruled_out(d) -> bool:
+        return d["op_status"] == "pending" and not (d["op_status"] == "exclude" and d["op_scope"])
+
+    reprocessed = [d for d in disputes if d["reprocessed_ok"] and _ruled_out(d)]
     live = [
         d for d in disputes
-        if d["op_status"] != "exclude"
-        and not d["reprocessed_ok"]
-        and not d.get("likely_settled")
-        # Hold and total both zero: nothing is sitting anywhere for this
-        # merchant, so every settlement of theirs went out. The flag was being
-        # computed and then ignored, which left these counted as outstanding.
-        and not (d["settled_clear"] and not d["negative_hold"])
+        if not (d["op_status"] == "exclude" and d["op_scope"])
+        and (
+            # A settlement someone has ruled on stays visible in its section,
+            # whatever the balance says now. Solving a dispute is what makes
+            # the money leave, so the balance check would rule out every
+            # dispute the moment it was solved and the Solved tab would sit
+            # empty however much work had gone through it.
+            d["op_status"] != "pending"
+            or (
+                not d["reprocessed_ok"]
+                and not d.get("likely_settled")
+                # Hold and total both zero: nothing is sitting anywhere, so
+                # every settlement for this merchant went out.
+                and not (d["settled_clear"] and not d["negative_hold"])
+            )
+        )
     ]
 
-    held_rows = [d for d in live if d["held"] or d["partially_held"] or d["negative_hold"]]
+    held_rows = [
+        d for d in live
+        if d["held"] or d["partially_held"] or d["negative_hold"] or d["op_status"] != "pending"
+    ]
     negative_hold = [d for d in live if d["negative_hold"]]
-    at_risk = [d for d in held_rows if d["double_pay_risk"]]
-    solved = [d for d in held_rows if d["op_status"] == "solved"]
-    in_progress = [d for d in held_rows if d["op_status"] == "in_progress"]
+
+    # The work queue: one bucket per operator decision, so clicking a status
+    # moves a row from one section to the next instead of leaving it in place
+    # for someone to re-read.
+    def _bucket(status: str) -> list[dict]:
+        return [d for d in held_rows if d["op_status"] == status]
+
+    pending_rows = _bucket("pending")
+    in_progress_rows = _bucket("in_progress")
+    solved_rows = _bucket("solved")
+    row_excluded_rows = _bucket("exclude")
+    # Still needing aggregator verification -- once solved or excluded it does
+    # not, so those drop off this count.
+    at_risk = [
+        d for d in held_rows
+        if d["double_pay_risk"] and d["op_status"] in ("pending", "in_progress")
+    ]
+    solved = solved_rows
+    in_progress = in_progress_rows
 
     # Money at risk is what the hold actually covers, summed over the
     # settlements being chased -- not the raw hold balance, which can exceed
@@ -370,14 +425,16 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
     held_by_mid = {
         d["mid"]: d["hold_balance"] for d in held_rows
     }  # kept for the merchant count only
-    likely_settled = [d for d in disputes if d.get("likely_settled") and d["op_status"] != "exclude"]
+    likely_settled = [
+        d for d in disputes
+        if d.get("likely_settled") and _ruled_out(d) and not d["reprocessed_ok"]
+    ]
     # Nothing sitting on the merchant at all. Counted so the figures reconcile:
     # every row from the switch is either listed or in one of these buckets.
     settled_clear = [
         d for d in disputes
-        if d["settled_clear"] and not d["negative_hold"]
-        and d["op_status"] != "exclude" and not d["reprocessed_ok"]
-        and not d.get("likely_settled")
+        if d["settled_clear"] and not d["negative_hold"] and _ruled_out(d)
+        and not d["reprocessed_ok"] and not d.get("likely_settled")
     ]
 
     by_partner: dict[str, dict] = {}
@@ -416,6 +473,8 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "reprocessed_count": len(reprocessed),
             "solved_count": len(solved),
             "in_progress_count": len(in_progress),
+            "pending_count": len(pending_rows),
+            "row_excluded_count": len(row_excluded_rows),
             "open_count": len(held_rows) - len(solved),
         },
         "by_partner": sorted(by_partner.values(), key=lambda b: -b["amount"]),
