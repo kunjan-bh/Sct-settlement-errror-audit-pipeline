@@ -133,6 +133,14 @@ function OpsBar({
         </div>
       )}
 
+      {d.negative_hold && (
+        <p className="text-[11px] text-red-800 bg-red-50 border border-red-200 rounded px-2.5 py-1.5">
+          This merchant's hold balance is {money(d.hold_balance)} — below zero, and exactly
+          minus their total balance. That is a ledger problem, not a settled payment, so
+          this failure is listed rather than ruled out. Worth raising with whoever owns
+          the switch as well as chasing the settlement.
+        </p>
+      )}
       {d.likely_settled && (
         <p className="text-[11px] text-neutral-700 bg-neutral-100 border border-neutral-200 rounded px-2.5 py-1.5">
           This merchant holds {money(d.hold_balance)}, which their more recent failures
@@ -140,7 +148,7 @@ function OpsBar({
           balance, not stated by the switch; check before writing it off.
         </p>
       )}
-      {d.settled_clear && (
+      {d.settled_clear && !d.negative_hold && (
         <p className="text-[11px] text-neutral-700 bg-neutral-100 border border-neutral-200 rounded px-2.5 py-1.5">
           Hold and total balance are both zero — nothing is sitting on this merchant,
           so their settlements went through.
@@ -357,7 +365,7 @@ export default function DisputesPage() {
       (d) => d.op_status !== "exclude" && !d.reprocessed_ok && !d.likely_settled
     );
     const base =
-      filter === "held" ? live.filter((d) => d.held || d.partially_held)
+      filter === "held" ? live.filter((d) => d.held || d.partially_held || d.negative_hold)
         : filter === "risk" ? live.filter((d) => d.double_pay_risk)
           : filter === "reprocessed" ? all.filter((d) => d.reprocessed_ok && d.op_status !== "exclude")
               // "All failures" means all except excluded: an excluded entity
@@ -545,6 +553,10 @@ export default function DisputesPage() {
             sub={`${t.open_count} open · ${t.solved_count} solved`} tone="amber" />
           <Kpi label="Double-pay risk" value={t.at_risk_count.toLocaleString()}
             sub={shortMoney(t.at_risk_amount)} tone={t.at_risk_count ? "red" : "neutral"} />
+          {!!t.negative_hold_count && (
+            <Kpi label="Negative hold" value={t.negative_hold_count.toLocaleString()}
+              sub="ledger problem — hold below zero" tone="red" />
+          )}
           <Kpi label="All failures" value={t.failed.toLocaleString()}
             sub={`${t.merchants} merchants · ${t.reprocessed_count} reprocessed`} />
         </div>
@@ -619,6 +631,11 @@ export default function DisputesPage() {
                 {d.double_pay_risk && (
                   <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800 bg-amber-100 border border-amber-200 rounded px-2 py-0.5">
                     <FiAlertTriangle className="text-[11px]" /> verify before retry
+                  </span>
+                )}
+                {d.negative_hold && (
+                  <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-red-800 bg-red-50 border border-red-200 rounded px-2 py-0.5">
+                    <FiAlertTriangle className="text-[11px]" /> negative hold {shortMoney(d.hold_balance)}
                   </span>
                 )}
                 {(d.held || d.partially_held) && (

@@ -198,12 +198,25 @@ def _allocate_holds(disputes: list[dict]) -> None:
             d.setdefault("held", False)
             d.setdefault("partially_held", False)
             d.setdefault("likely_settled", False)
+            d.setdefault("negative_hold", False)
 
         pot = live[0]["hold_balance"] if live else 0.0
+
+        # A negative hold is not "no money held", it is a broken ledger: on
+        # every case seen so far the hold is exactly minus the total balance,
+        # which looks like a hold released twice. Whatever the cause, it is
+        # certainly not evidence that the settlement went through, so these
+        # surface as disputes needing attention rather than being ruled out
+        # for holding nothing.
+        if pot < 0:
+            for d in live:
+                d["negative_hold"] = True
+            continue
+
         # A merchant holding nothing was never a dispute -- those rows are not
         # "settled by allocation", they simply have no money sitting anywhere.
         # Only a hold that runs out part-way through tells us something.
-        if pot <= 0:
+        if pot == 0:
             continue
 
         remaining = pot
@@ -335,7 +348,8 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
         if d["op_status"] != "exclude" and not d["reprocessed_ok"] and not d.get("likely_settled")
     ]
 
-    held_rows = [d for d in live if d["held"] or d["partially_held"]]
+    held_rows = [d for d in live if d["held"] or d["partially_held"] or d["negative_hold"]]
+    negative_hold = [d for d in live if d["negative_hold"]]
     at_risk = [d for d in held_rows if d["double_pay_risk"]]
     solved = [d for d in held_rows if d["op_status"] == "solved"]
     in_progress = [d for d in held_rows if d["op_status"] == "in_progress"]
@@ -372,13 +386,14 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "held_count": len(held_rows),
             "held_merchants": len(held_by_mid),
             "held_amount": round(sum(
-                d["amount"] if d["held"] else d.get("covered_amount", 0.0)
+                d["amount"] if d["held"] else d.get("covered_amount", 0.0) if not d["negative_hold"] else 0.0
                 for d in held_rows
             ), 2),
             "at_risk_count": len(at_risk),
             "at_risk_amount": round(sum(d["amount"] for d in at_risk), 2),
             "excluded_count": len(excluded),
             "likely_settled_count": len(likely_settled),
+            "negative_hold_count": len(negative_hold),
             "reprocessed_count": len(reprocessed),
             "solved_count": len(solved),
             "in_progress_count": len(in_progress),

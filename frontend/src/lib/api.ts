@@ -700,6 +700,9 @@ export interface Dispute {
   /** The merchant holds money, but it ran out before reaching this (older)
    *  failure — so this one most likely already settled. */
   likely_settled: boolean;
+  /** Hold balance is below zero — a broken ledger, not an absence of held
+   *  money, so this needs looking at rather than ruling out. */
+  negative_hold: boolean;
   /** Hold and total balance are both zero: nothing is sitting anywhere, so
    *  every settlement for this merchant went through. */
   settled_clear: boolean;
@@ -736,6 +739,7 @@ export interface DisputeTotals {
   at_risk_amount: number;
   excluded_count: number;
   likely_settled_count: number;
+  negative_hold_count: number;
   reprocessed_count: number;
   solved_count: number;
   in_progress_count: number;
