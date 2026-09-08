@@ -371,6 +371,14 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
         d["mid"]: d["hold_balance"] for d in held_rows
     }  # kept for the merchant count only
     likely_settled = [d for d in disputes if d.get("likely_settled") and d["op_status"] != "exclude"]
+    # Nothing sitting on the merchant at all. Counted so the figures reconcile:
+    # every row from the switch is either listed or in one of these buckets.
+    settled_clear = [
+        d for d in disputes
+        if d["settled_clear"] and not d["negative_hold"]
+        and d["op_status"] != "exclude" and not d["reprocessed_ok"]
+        and not d.get("likely_settled")
+    ]
 
     by_partner: dict[str, dict] = {}
     for d in disputes:
@@ -403,6 +411,7 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "at_risk_amount": round(sum(d["amount"] for d in at_risk), 2),
             "excluded_count": len(excluded),
             "likely_settled_count": len(likely_settled),
+            "settled_clear_count": len(settled_clear),
             "negative_hold_count": len(negative_hold),
             "reprocessed_count": len(reprocessed),
             "solved_count": len(solved),

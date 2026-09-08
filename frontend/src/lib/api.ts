@@ -739,6 +739,7 @@ export interface DisputeTotals {
   at_risk_amount: number;
   excluded_count: number;
   likely_settled_count: number;
+  settled_clear_count: number;
   negative_hold_count: number;
   reprocessed_count: number;
   solved_count: number;

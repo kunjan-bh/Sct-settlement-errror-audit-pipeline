@@ -585,10 +585,11 @@ export default function DisputesPage() {
         ))}
       </div>
 
-      {t && !!(t.reprocessed_count + t.likely_settled_count + t.excluded_count) && (
+      {t && !!(t.reprocessed_count + t.likely_settled_count + t.settled_clear_count + t.excluded_count) && (
         <p className="text-[11px] text-neutral-400 -mt-2">
           Not listed: {t.reprocessed_count.toLocaleString()} already reprocessed,{" "}
-          {t.likely_settled_count.toLocaleString()} covered by the merchant's balance,{" "}
+          {(t.likely_settled_count + t.settled_clear_count).toLocaleString()} where the
+          merchant's balance shows the money went out,{" "}
           {t.excluded_count.toLocaleString()} excluded.
         </p>
       )}
