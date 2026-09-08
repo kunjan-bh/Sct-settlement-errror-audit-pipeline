@@ -41,9 +41,8 @@ const OP_ACTIONS: { key: DisputeOpStatus; label: string; on: string }[] = [
  *  one applies depends on what the switch actually filled in for the row. */
 function scopeChoices(d: Dispute): { type: DisputeScopeType; value: string; label: string }[] {
   const out: { type: DisputeScopeType; value: string; label: string }[] = [];
-  if (d.bank_or_wallet) out.push({ type: "bank_or_wallet", value: d.bank_or_wallet, label: `wallet / bank “${d.bank_or_wallet}”` });
-  if (d.partner) out.push({ type: "partner", value: d.partner, label: `aggregator “${d.partner}”` });
-  if (d.acquirer_name && d.acquirer_name !== d.partner) out.push({ type: "acquirer", value: d.acquirer_name, label: `acquirer “${d.acquirer_name}”` });
+  if (d.mapped_partner) out.push({ type: "mapped_partner", value: d.mapped_partner, label: `${d.partner_type === "aggregator" ? "aggregator" : "wallet / bank"} “${d.mapped_partner}”` });
+  if (d.bank_or_wallet) out.push({ type: "bank_or_wallet", value: d.bank_or_wallet, label: `institution “${d.bank_or_wallet}”` });
   if (d.mid) out.push({ type: "mid", value: d.mid, label: `merchant ${d.mid}` });
   return out;
 }
@@ -179,6 +178,7 @@ function DetailGrid({ d }: { d: Dispute }) {
     {
       title: "Beneficiary & routing",
       rows: [
+        ["Aggregator / wallet", d.mapped_partner], ["Mapped as", d.partner_type],
         ["Partner", d.partner], ["Acquirer", d.acquirer_name],
         ["Bank / wallet", d.bank_or_wallet], ["Wallet code", d.wallet_code],
         ["Creditor", d.creditor_name], ["Creditor a/c", d.creditor_account],
@@ -220,6 +220,7 @@ export default function DisputesPage() {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("held");
   const [search, setSearch] = useState("");
+  const [entity, setEntity] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
@@ -239,7 +240,7 @@ export default function DisputesPage() {
   const loadScopes = useCallback(async () => {
     try {
       const s = await disputesApi.scopes();
-      setExcluded(s.filter((x) => x.scope_type === "bank_or_wallet").map((x) => x.scope_value));
+      setExcluded(s.filter((x) => x.scope_type === "mapped_partner").map((x) => x.scope_value));
     } catch {
       setExcluded([]);
     }
@@ -307,7 +308,7 @@ export default function DisputesPage() {
   const availableEntities = useMemo(() => {
     const counts = new Map<string, number>();
     for (const d of data?.disputes ?? []) {
-      const key = d.bank_or_wallet || d.acquirer_name || d.partner;
+      const key = d.mapped_partner;
       if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
     }
     return [...counts.entries()]
@@ -324,8 +325,8 @@ export default function DisputesPage() {
       // "pending" clears a rule rather than storing one, so unticking really
       // brings the entity back rather than pinning it to a status.
       await Promise.all([
-        ...added.map((e) => disputesApi.setScope("bank_or_wallet", e, { status: "exclude" })),
-        ...removed.map((e) => disputesApi.setScope("bank_or_wallet", e, { status: "pending" })),
+        ...added.map((e) => disputesApi.setScope("mapped_partner", e, { status: "exclude" })),
+        ...removed.map((e) => disputesApi.setScope("mapped_partner", e, { status: "pending" })),
       ]);
       if (excludeDetailsRef.current) excludeDetailsRef.current.open = false;
       await loadScopes();
@@ -347,13 +348,14 @@ export default function DisputesPage() {
               // "All failures" means all except excluded: an excluded entity
               // is gone from this tab, not merely filed under another one.
               : all.filter((d) => d.op_status !== "exclude");
+    const scoped = entity ? base.filter((d) => d.mapped_partner === entity) : base;
     const q = search.trim().toLowerCase();
-    if (!q) return base;
-    return base.filter((d) =>
-      [d.mid, d.crrn, d.merchant_name, d.reason, d.partner, d.creditor_account]
+    if (!q) return scoped;
+    return scoped.filter((d) =>
+      [d.mid, d.crrn, d.merchant_name, d.reason, d.mapped_partner, d.bank_or_wallet, d.creditor_account]
         .some((v) => (v || "").toString().toLowerCase().includes(q))
     );
-  }, [data, filter, search]);
+  }, [data, filter, search, entity]);
 
   const toggle = (key: string) =>
     setOpen((prev) => {
@@ -364,10 +366,10 @@ export default function DisputesPage() {
 
   const exportCsv = () => {
     const head = ["MID", "Merchant", "CRRN", "Amount", "Hold balance", "Reason",
-      "Stopped at", "Partner", "Date", "Double-pay risk"];
+      "Stopped at", "Aggregator / wallet", "Institution", "Date", "Double-pay risk"];
     const body = rows.map((d) => [
       d.mid, d.merchant_name ?? "", d.crrn ?? "", d.amount, d.hold_balance,
-      d.reason, d.current_status ?? "", d.partner ?? "", d.date,
+      d.reason, d.current_status ?? "", d.mapped_partner, d.bank_or_wallet ?? "", d.date,
       d.double_pay_risk ? "YES" : "",
     ]);
     const csv = [head, ...body]
@@ -431,7 +433,18 @@ export default function DisputesPage() {
           {loading ? "Reading switch…" : "Refresh"}
         </button>
 
-        <div className="relative ml-auto">
+        <select
+          value={entity}
+          onChange={(e) => setEntity(e.target.value)}
+          className="ml-auto border border-neutral-300 rounded px-2 py-2 text-sm text-neutral-700 max-w-56"
+        >
+          <option value="">All aggregators / wallets</option>
+          {availableEntities.map((e) => (
+            <option key={e.entity} value={e.entity}>{e.entity} ({e.count})</option>
+          ))}
+        </select>
+
+        <div className="relative">
           <FiSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400 text-sm" />
           <input value={search} onChange={(e) => setSearch(e.target.value)}
             placeholder="MID, CRRN, merchant, reason…"
@@ -457,8 +470,9 @@ export default function DisputesPage() {
           </summary>
           <div className="absolute right-0 z-20 mt-2 w-80 max-h-96 flex flex-col bg-white border border-neutral-200 rounded-lg shadow-lg p-2">
             <p className="text-[11px] text-neutral-400 px-2 pt-1 pb-2 leading-snug">
-              Tick a wallet, bank or aggregator to drop it from Disputes — for ones that
-              settle on their own schedule and are not ours to chase. Nothing changes
+              Tick an aggregator or wallet to drop it from Disputes — for ones that
+              settle on their own schedule and are not ours to chase. Names come from
+              Partner Mapping, so they match the rest of the app. Nothing changes
               until you click OK.
             </p>
             <div className="overflow-y-auto">
@@ -569,6 +583,9 @@ export default function DisputesPage() {
                 <span className="font-mono text-xs text-neutral-500 shrink-0 w-32">{d.crrn}</span>
                 <span className="text-sm font-semibold tabular-nums text-neutral-900 shrink-0 w-32 text-right">
                   {money(d.amount)}
+                </span>
+                <span className="text-xs text-neutral-500 shrink-0 w-32 truncate" title={d.bank_or_wallet ?? ""}>
+                  {d.mapped_partner}
                 </span>
                 <span className="text-sm text-neutral-600 truncate flex-1">{d.reason}</span>
 

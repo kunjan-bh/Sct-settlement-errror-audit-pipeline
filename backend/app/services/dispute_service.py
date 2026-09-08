@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from app.models.dispute_status import DisputeStatus
+from app.services.classification_service import PartnerResolver
 from app.services.core_db import run_query
 from app.services.settings_service import get_settings
 
@@ -147,6 +148,7 @@ def _decision_for(row: dict, decisions: dict, scoped: dict) -> dict:
         }
 
     for scope_type, value in (
+        ("mapped_partner", row.get("_mapped_partner")),
         ("partner", row.get("partner")),
         ("bank_or_wallet", row.get("bank_name_or_wallet_name")),
         ("acquirer", row.get("acquirer_name")),
@@ -185,6 +187,14 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
 
     hints = _double_pay_hints()
 
+    # The switch names the *merchant's* institution ("HAMRONEPAL", "SIMRIK"),
+    # not the aggregator that owns it -- all three of those are Mbank. Ops
+    # chases the aggregator, so resolve the MID through the same partner
+    # mapping the batch flow uses and group on that. It is a dict lookup on the
+    # first three digits: 1,315 MIDs resolve in under 2ms, against a 10s switch
+    # query, so this costs nothing.
+    resolver = PartnerResolver.load()
+
     # Operator decisions live in our own database, never on the switch. Loaded
     # once here rather than per row: a wide range is thousands of failures.
     decisions = {d.dispute_key: d for d in DisputeStatus.query.all()}
@@ -210,8 +220,14 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
         held = hold > 0 and hold >= amount
         partially_held = hold > 0 and not held
 
+        mapped_partner, partner_type = resolver.resolve(mid)
+        # _decision_for reads this off the raw row, so stamp it there too.
+        r["_mapped_partner"] = mapped_partner
+
         seen_mids.add(mid)
         disputes.append({
+            "mapped_partner": mapped_partner,
+            "partner_type": partner_type,
             "id": r.get("id"),
             "mid": mid,
             "merchant_name": r.get("merchant_name"),

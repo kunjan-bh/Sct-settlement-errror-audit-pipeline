@@ -673,6 +673,10 @@ export interface Dispute {
   remarks: string | null;
   remark_two: string | null;
   partner: string | null;
+  /** Aggregator/wallet from Partner Mapping, resolved from the MID. The switch
+   *  names the merchant's institution, which is not who ops chases. */
+  mapped_partner: string;
+  partner_type: "aggregator" | "bank_wallet" | null;
   acquirer_name: string | null;
   bank_or_wallet: string | null;
   wallet_code: string | null;
@@ -701,7 +705,7 @@ export interface Dispute {
 }
 
 export type DisputeOpStatus = "pending" | "in_progress" | "solved" | "exclude";
-export type DisputeScopeType = "partner" | "bank_or_wallet" | "acquirer" | "mid";
+export type DisputeScopeType = "mapped_partner" | "partner" | "bank_or_wallet" | "acquirer" | "mid";
 
 export interface DisputeScope {
   id: number;

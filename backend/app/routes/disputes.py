@@ -133,9 +133,9 @@ def set_scope_status(scope_type, scope_value):
     schedule produces the same failure every day, and clicking forty rows to
     say so is not a workflow.
     """
-    if scope_type not in ("partner", "bank_or_wallet", "acquirer", "mid"):
+    if scope_type not in ("mapped_partner", "partner", "bank_or_wallet", "acquirer", "mid"):
         return jsonify({
-            "error": "scope_type must be partner, bank_or_wallet, acquirer or mid"
+            "error": "scope_type must be mapped_partner, partner, bank_or_wallet, acquirer or mid"
         }), 400
 
     payload = request.get_json(silent=True) or {}
