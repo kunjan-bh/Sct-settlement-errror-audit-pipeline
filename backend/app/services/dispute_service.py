@@ -168,55 +168,58 @@ def _decision_for(row: dict, decisions: dict, scoped: dict) -> dict:
 
 def _allocate_holds(disputes: list[dict]) -> None:
     """
-    Decide, per merchant, which of their failures the held money actually
-    covers -- setting `held`, `partially_held` and `likely_settled` in place.
+    Decide, per merchant, which of their failures the money still sitting on
+    them accounts for -- setting `held`, `partially_held` and `likely_settled`
+    in place.
 
-    The hold balance is one pot per merchant, not one per failure. A merchant
-    with two failed settlements of NPR 1,000 who holds NPR 1,000 has one
-    outstanding failure and one that already went through; checking each row
-    against the balance on its own calls both of them held and doubles the
-    money at risk.
+    The pot is `total_balance`, not `hold_balance`. The switch only sometimes
+    flags unsettled money as held: across a two-day range, 82 failures had a
+    zero hold while the merchant's total balance was at least the failed
+    amount, and in 72 of those the total matched the failed amount to the
+    rupee. A merchant's ordinary float does not equal a failed settlement
+    exactly 72 times -- that is the unsettled money, sitting in the balance
+    without the hold flag. `hold_balance` stays on the row as the stronger
+    signal when the switch does set it.
 
-    Allocation runs most recent first. An older failure has had longer to be
-    retried, swept up by a system-default run or settled on call, so when the
-    hold only stretches to some of them it is the newer ones that are still
-    outstanding. Whatever the hold does not reach is marked `likely_settled`
-    and drops out of the dispute list.
+    The balance is one pot per merchant, not one per failure: two failed
+    settlements of NPR 1,000 against a NPR 1,000 balance is one outstanding
+    failure and one that already went through. Allocation runs most recent
+    first, because an older failure has had longer to be retried, swept by a
+    system-default run, or settled on call. Whatever the pot does not reach is
+    marked `likely_settled` and drops out.
 
-    This is an inference, not a fact the switch states: nothing links a hold
-    to the settlement that caused it. It is why the flag is named "likely" and
-    why these rows stay in the payload rather than being deleted.
+    This is inference, not something the switch states -- nothing links a
+    balance to the settlement that caused it.
     """
     by_mid: dict[str, list[dict]] = {}
     for d in disputes:
         by_mid.setdefault(d["mid"], []).append(d)
 
     for rows in by_mid.values():
-        # Excluded rows do not consume the hold -- they are not being chased.
+        # Excluded and already-reprocessed rows do not consume the pot; they
+        # are not being chased.
         live = [d for d in rows if d["op_status"] != "exclude" and not d["reprocessed_ok"]]
         for d in rows:
             d.setdefault("held", False)
             d.setdefault("partially_held", False)
             d.setdefault("likely_settled", False)
             d.setdefault("negative_hold", False)
+        if not live:
+            continue
 
-        pot = live[0]["hold_balance"] if live else 0.0
-
-        # A negative hold is not "no money held", it is a broken ledger: on
-        # every case seen so far the hold is exactly minus the total balance,
-        # which looks like a hold released twice. Whatever the cause, it is
-        # certainly not evidence that the settlement went through, so these
-        # surface as disputes needing attention rather than being ruled out
-        # for holding nothing.
-        if pot < 0:
+        # A negative hold is not "no money held", it is a broken ledger: in
+        # every case seen the hold is exactly minus the total balance, which
+        # looks like a hold released twice. Certainly not evidence the
+        # settlement went through, so these surface rather than being ruled out.
+        if live[0]["hold_balance"] < 0:
             for d in live:
                 d["negative_hold"] = True
             continue
 
-        # A merchant holding nothing was never a dispute -- those rows are not
-        # "settled by allocation", they simply have no money sitting anywhere.
-        # Only a hold that runs out part-way through tells us something.
-        if pot == 0:
+        # Nothing sitting anywhere -- every settlement for this merchant went
+        # out. This is the case `settled_clear` records.
+        pot = live[0]["total_balance"]
+        if pot <= 0:
             continue
 
         remaining = pot
@@ -228,8 +231,8 @@ def _allocate_holds(disputes: list[dict]) -> None:
                 d["held"] = True
                 remaining -= d["amount"]
             else:
-                # The pot covers part of this one: still outstanding, but the
-                # merchant is not holding all of it.
+                # The pot covers part of this one: still outstanding, but not
+                # all of it is still sitting there.
                 d["partially_held"] = True
                 d["covered_amount"] = round(remaining, 2)
                 remaining = 0.0
@@ -345,7 +348,13 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
     reprocessed = [d for d in disputes if d["reprocessed_ok"] and d["op_status"] != "exclude"]
     live = [
         d for d in disputes
-        if d["op_status"] != "exclude" and not d["reprocessed_ok"] and not d.get("likely_settled")
+        if d["op_status"] != "exclude"
+        and not d["reprocessed_ok"]
+        and not d.get("likely_settled")
+        # Hold and total both zero: nothing is sitting anywhere for this
+        # merchant, so every settlement of theirs went out. The flag was being
+        # computed and then ignored, which left these counted as outstanding.
+        and not (d["settled_clear"] and not d["negative_hold"])
     ]
 
     held_rows = [d for d in live if d["held"] or d["partially_held"] or d["negative_hold"]]

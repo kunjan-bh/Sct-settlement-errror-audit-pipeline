@@ -29,7 +29,7 @@ function isoDaysAgo(days: number) {
   return d.toISOString().slice(0, 10);
 }
 
-type Filter = "held" | "risk" | "all";
+type Filter = "held" | "risk";
 
 const OP_ACTIONS: { key: DisputeOpStatus; label: string; on: string }[] = [
   { key: "in_progress", label: "In Progress", on: "bg-blue-600 border-blue-600 text-white" },
@@ -139,6 +139,13 @@ function OpsBar({
           minus their total balance. That is a ledger problem, not a settled payment, so
           this failure is listed rather than ruled out. Worth raising with whoever owns
           the switch as well as chasing the settlement.
+        </p>
+      )}
+      {!d.negative_hold && d.hold_balance === 0 && d.total_balance >= d.amount && (
+        <p className="text-[11px] text-neutral-700 bg-neutral-100 border border-neutral-200 rounded px-2.5 py-1.5">
+          The switch has not flagged a hold on this one, but the merchant's balance is
+          still {money(d.total_balance)} — the money has not gone out. Balance, not the
+          hold flag, is what says this is outstanding.
         </p>
       )}
       {d.likely_settled && (
@@ -407,12 +414,6 @@ export default function DisputesPage() {
   };
 
   const t = data?.totals;
-  const liveCount = useMemo(
-    () => (data?.disputes ?? []).filter(
-      (d) => d.op_status !== "exclude" && !d.reprocessed_ok && !d.likely_settled
-    ).length,
-    [data]
-  );
 
   return (
     <div className="max-w-7xl mx-auto px-8 py-10 space-y-6 font-sans">
@@ -563,8 +564,8 @@ export default function DisputesPage() {
             <Kpi label="Negative hold" value={t.negative_hold_count.toLocaleString()}
               sub="ledger problem — hold below zero" tone="red" />
           )}
-          <Kpi label="All failures" value={t.failed.toLocaleString()}
-            sub={`${t.merchants} merchants still open`} />
+          <Kpi label="Still outstanding" value={t.failed.toLocaleString()}
+            sub={`${t.merchants} merchants`} />
         </div>
       )}
 
@@ -572,7 +573,6 @@ export default function DisputesPage() {
         {([
           ["held", `Disputes${t ? ` (${t.held_count})` : ""}`],
           ["risk", `Double-pay risk${t ? ` (${t.at_risk_count})` : ""}`],
-          ["all", `All failures${t ? ` (${liveCount})` : ""}`],
         ] as [Filter, string][]).map(([key, label]) => (
           <button key={key} type="button" onClick={() => setFilter(key)}
             className={`px-3.5 py-2 text-xs font-semibold border-b-2 -mb-px transition-colors cursor-pointer ${
@@ -647,12 +647,18 @@ export default function DisputesPage() {
                   </span>
                 )}
                 {(d.held || d.partially_held) && (
-                  <span className={`shrink-0 text-[11px] font-semibold rounded px-2 py-0.5 border ${
-                    d.held
-                      ? "text-emerald-800 bg-emerald-50 border-emerald-200"
-                      : "text-neutral-700 bg-neutral-100 border-neutral-200"
-                  }`}>
-                    {d.held ? `held ${shortMoney(d.amount)}` : `part-held ${shortMoney(d.covered_amount ?? 0)}`}
+                  <span
+                    title={d.hold_balance > 0
+                      ? `Flagged as held by the switch (hold ${money(d.hold_balance)})`
+                      : `Not flagged as held, but the merchant's balance is ${money(d.total_balance)}`}
+                    className={`shrink-0 text-[11px] font-semibold rounded px-2 py-0.5 border ${
+                      d.hold_balance > 0
+                        ? "text-emerald-800 bg-emerald-50 border-emerald-200"
+                        : "text-neutral-700 bg-neutral-100 border-neutral-200"
+                    }`}
+                  >
+                    {d.held ? `${d.hold_balance > 0 ? "held" : "on balance"} ${shortMoney(d.amount)}`
+                            : `part ${shortMoney(d.covered_amount ?? 0)}`}
                   </span>
                 )}
               </button>
