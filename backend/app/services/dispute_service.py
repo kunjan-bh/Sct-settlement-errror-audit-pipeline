@@ -277,12 +277,17 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
         if d["held"] or d["partially_held"]:
             b["held"] += 1
 
+    # Every headline number is net of exclusions. An excluded entity is not
+    # work that got done and not work that is outstanding -- it is nothing, and
+    # leaving it in a total only invites "these don't add up".
+    counted = [d for d in disputes if d["op_status"] != "exclude"]
+
     return {
         "range": {"from": str(date_from), "to": str(date_to)},
         "totals": {
-            "failed": len(disputes),
-            "merchants": len(seen_mids),
-            "failed_amount": round(sum(d["amount"] for d in disputes), 2),
+            "failed": len(counted),
+            "merchants": len({d["mid"] for d in counted}),
+            "failed_amount": round(sum(d["amount"] for d in counted), 2),
             "held_count": len(held_rows),
             "held_merchants": len(held_by_mid),
             "held_amount": round(sum(held_by_mid.values()), 2),

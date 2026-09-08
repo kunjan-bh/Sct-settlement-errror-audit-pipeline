@@ -28,7 +28,7 @@ function isoDaysAgo(days: number) {
   return d.toISOString().slice(0, 10);
 }
 
-type Filter = "held" | "risk" | "reprocessed" | "excluded" | "all";
+type Filter = "held" | "risk" | "reprocessed" | "all";
 
 const OP_ACTIONS: { key: DisputeOpStatus; label: string; on: string }[] = [
   { key: "in_progress", label: "In Progress", on: "bg-blue-600 border-blue-600 text-white" },
@@ -343,8 +343,9 @@ export default function DisputesPage() {
       filter === "held" ? live.filter((d) => d.held || d.partially_held)
         : filter === "risk" ? live.filter((d) => d.double_pay_risk)
           : filter === "reprocessed" ? all.filter((d) => d.reprocessed_ok && d.op_status !== "exclude")
-            : filter === "excluded" ? all.filter((d) => d.op_status === "exclude")
-              : all;
+              // "All failures" means all except excluded: an excluded entity
+              // is gone from this tab, not merely filed under another one.
+              : all.filter((d) => d.op_status !== "exclude");
     const q = search.trim().toLowerCase();
     if (!q) return base;
     return base.filter((d) =>
@@ -511,7 +512,7 @@ export default function DisputesPage() {
           <Kpi label="Double-pay risk" value={t.at_risk_count.toLocaleString()}
             sub={shortMoney(t.at_risk_amount)} tone={t.at_risk_count ? "red" : "neutral"} />
           <Kpi label="All failures" value={t.failed.toLocaleString()}
-            sub={`${t.reprocessed_count} reprocessed · ${t.excluded_count} excluded`} />
+            sub={`${t.merchants} merchants · ${t.reprocessed_count} reprocessed`} />
         </div>
       )}
 
@@ -520,7 +521,6 @@ export default function DisputesPage() {
           ["held", `Disputes${t ? ` (${t.held_count})` : ""}`],
           ["risk", `Double-pay risk${t ? ` (${t.at_risk_count})` : ""}`],
           ["reprocessed", `Already reprocessed${t ? ` (${t.reprocessed_count})` : ""}`],
-          ["excluded", `Excluded${t ? ` (${t.excluded_count})` : ""}`],
           ["all", `All failures${t ? ` (${t.failed})` : ""}`],
         ] as [Filter, string][]).map(([key, label]) => (
           <button key={key} type="button" onClick={() => setFilter(key)}
@@ -542,9 +542,7 @@ export default function DisputesPage() {
             ? "No failed settlement in this range has money still held on the merchant."
             : filter === "reprocessed"
               ? "Nothing in this range settled successfully on a later attempt."
-              : filter === "excluded"
-                ? "Nothing has been excluded."
-                : "Nothing matches."}
+              : "Nothing matches."}
         </p>
       )}
 
