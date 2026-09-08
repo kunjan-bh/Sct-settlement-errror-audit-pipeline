@@ -481,7 +481,6 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "in_progress_count": len(in_progress),
             "pending_count": len(pending_rows),
             "row_excluded_count": len(row_excluded_rows),
-            "open_count": len(held_rows) - len(solved),
         },
         "by_partner": sorted(by_partner.values(), key=lambda b: -b["amount"]),
         "disputes": disputes,

@@ -47,6 +47,25 @@ function scopeChoices(d: Dispute): { type: DisputeScopeType; value: string; labe
   return out;
 }
 
+/**
+ * Whether a dispute belongs on the page at all.
+ *
+ * The list and the tab counts must agree, so both call this. They were written
+ * separately once and drifted: the counts dropped rows that had been
+ * reprocessed or covered by the balance, while the list kept showing them
+ * because a decision had been taken on them -- so the Solved label read lower
+ * than the rows underneath it.
+ */
+function isListed(d: Dispute): boolean {
+  // A wallet-level rule removes its rows entirely; a dispute excluded by hand
+  // belongs in the Excluded tab.
+  if (d.op_status === "exclude" && d.op_scope) return false;
+  // Anything already decided stays visible in its section whatever the balance
+  // says now -- solving a dispute is what makes the money leave.
+  if (d.op_status !== "pending") return true;
+  return !d.reprocessed_ok && !d.likely_settled && !(d.settled_clear && !d.negative_hold);
+}
+
 function Kpi({
   label, value, sub, tone = "neutral",
 }: {
@@ -310,12 +329,12 @@ export default function DisputesPage() {
         );
         // Recount locally so the tab labels move with the row. Re-fetching
         // would re-read the switch (~10s) and lose your place in the list.
-        const counted = disputes.filter(
-          (x) => !x.reprocessed_ok && !x.likely_settled &&
-                 !(x.settled_clear && !x.negative_hold) &&
-                 !(x.op_status === "exclude" && x.op_scope)
-        );
+        const counted = disputes.filter(isListed);
         const n = (s: string) => counted.filter((x) => x.op_status === s).length;
+        // Outstanding work only, matching how the server computes these.
+        const outstanding = counted.filter(
+          (x) => x.op_status === "pending" || x.op_status === "in_progress"
+        );
         return {
           ...prev,
           disputes,
@@ -325,9 +344,16 @@ export default function DisputesPage() {
             in_progress_count: n("in_progress"),
             solved_count: n("solved"),
             row_excluded_count: n("exclude"),
-            at_risk_count: counted.filter(
-              (x) => x.double_pay_risk && (x.op_status === "pending" || x.op_status === "in_progress")
-            ).length,
+            listed_count: counted.length,
+            held_count: outstanding.length,
+            held_merchants: new Set(outstanding.map((x) => x.mid)).size,
+            held_amount: Math.round(
+              outstanding.reduce(
+                (s, x) => s + (x.negative_hold ? 0 : x.held ? x.amount : x.covered_amount ?? 0),
+                0
+              ) * 100
+            ) / 100,
+            at_risk_count: outstanding.filter((x) => x.double_pay_risk).length,
           },
         };
       });
@@ -390,17 +416,7 @@ export default function DisputesPage() {
 
   const rows = useMemo(() => {
     const all = data?.disputes ?? [];
-    const live = all.filter(
-      (d) =>
-        // A wallet-level rule removes its rows entirely; a dispute someone
-        // excluded by hand belongs in the Excluded tab.
-        !(d.op_status === "exclude" && d.op_scope) &&
-        // Anything already decided stays visible in its section whatever the
-        // balance says now -- solving a dispute is what makes the money leave.
-        (d.op_status !== "pending" ||
-          (!d.reprocessed_ok && !d.likely_settled &&
-            !(d.settled_clear && !d.negative_hold)))
-    );
+    const live = all.filter(isListed);
     // One tab per decision. Acting on a dispute moves it out of Disputes and
     // into its section -- Disputes is what is left to do, not a list of
     // everything with the done ones still sitting in it.

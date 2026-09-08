@@ -748,7 +748,6 @@ export interface DisputeTotals {
   row_excluded_count: number;
   /** Everything still listed, including solved and individually excluded. */
   listed_count: number;
-  open_count: number;
 }
 
 export interface DisputeResponse {
