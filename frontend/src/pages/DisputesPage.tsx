@@ -175,6 +175,13 @@ function OpsBar({
           hold flag, is what says this is outstanding.
         </p>
       )}
+      {d.carried_over && (
+        <p className="text-[11px] text-blue-900 bg-blue-50 border border-blue-200 rounded px-2.5 py-1.5">
+          Carried forward from {d.date}, outside the range you are viewing. Anything left
+          In Progress stays on the list until it is solved or excluded, so unfinished work
+          cannot quietly age out of view.
+        </p>
+      )}
       {d.likely_settled && (
         <p className="text-[11px] text-neutral-700 bg-neutral-100 border border-neutral-200 rounded px-2.5 py-1.5">
           This merchant holds {money(d.hold_balance)}, which their more recent failures
@@ -716,6 +723,12 @@ export default function DisputesPage() {
                 {d.double_pay_risk && (
                   <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800 bg-amber-100 border border-amber-200 rounded px-2 py-0.5">
                     <FiAlertTriangle className="text-[11px]" /> verify before retry
+                  </span>
+                )}
+                {d.carried_over && (
+                  <span className="shrink-0 text-[11px] font-semibold text-blue-800 bg-blue-50 border border-blue-200 rounded px-2 py-0.5"
+                    title={`Picked up on ${d.date} and still in progress, so it stays on the list`}>
+                    from {d.date}
                   </span>
                 )}
                 {d.negative_hold && (

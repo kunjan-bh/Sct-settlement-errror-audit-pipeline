@@ -61,6 +61,42 @@ REPROCESS_WINDOW_DAYS = 3
 # `ok` is grouped up front rather than written as a correlated EXISTS: the
 # correlated form scans fund_transfer_logs once per failed row and blew the
 # statement timeout on a two-day window.
+_SELECT_COLUMNS = """
+    f.id, f.merchant_code, f.merchant_name, f.crrn, f.stan, f.ref_id,
+    f.amount, f.service_charge, f.date, f.date_time,
+    f.status, f.current_status, f.status_code,
+    f.remarks, f.remark_two,
+    f.partner, f.acquirer_name, f.bank_name_or_wallet_name, f.wallet_code,
+    f.institution_id, f.settlement_frequency, f.medium,
+    f.creditor_name, f.creditor_account, f.creditor_mobile,
+    f.bank_id, f.branch_id, f.partner_ref_id,
+    b.member_code, b.total_balance, b.hold_balance,
+    (ok.first_ok IS NOT NULL AND ok.first_ok > f.date_time) AS reprocessed_ok,
+    ok.first_ok AS reprocessed_at
+"""
+
+# Settlements someone is still working on, pulled in by id no matter how old
+# they are. Without this, an unfinished dispute silently drops off the list as
+# soon as the date window moves past it -- the work is still outstanding, it is
+# just invisible, which is the worst of both.
+_CARRIED_SQL = f"""
+WITH bal AS (
+    SELECT merchant_code, member_code, total_balance, hold_balance
+    FROM supports.get_merchant_balance()
+),
+ok AS (
+    SELECT merchant_code, amount, min(date_time) AS first_ok
+    FROM operators.fund_transfer_logs
+    WHERE date BETWEEN %(ok_from)s AND %(reprocess_to)s AND status = 'SUCCESS'
+    GROUP BY merchant_code, amount
+)
+SELECT {_SELECT_COLUMNS}
+FROM operators.fund_transfer_logs f
+LEFT JOIN bal b ON b.merchant_code = f.merchant_code
+LEFT JOIN ok ON ok.merchant_code = f.merchant_code AND ok.amount = f.amount
+WHERE f.id = ANY(%(ids)s)
+"""
+
 _DISPUTE_SQL = """
 WITH bal AS (
     SELECT merchant_code, member_code, total_balance, hold_balance
@@ -264,15 +300,45 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
     and hiding those rows just moves the question somewhere this app cannot
     answer.
     """
+    reprocess_to = str(_as_date(date_to) + timedelta(days=REPROCESS_WINDOW_DAYS))
     rows = run_query(
         _DISPUTE_SQL,
         {
             "date_from": str(date_from),
             "date_to": str(date_to),
-            "reprocess_to": str(_as_date(date_to) + timedelta(days=REPROCESS_WINDOW_DAYS)),
+            "reprocess_to": reprocess_to,
             "statuses": list(_FAILED_STATUSES),
         },
     )
+
+    # Carry forward anything still being worked on. A dispute picked up
+    # yesterday is still outstanding today, and letting the date window hide it
+    # loses the work rather than finishing it. Only unfinished decisions are
+    # carried: solved and excluded ones are done, and dragging them along
+    # forever would grow the list without end.
+    in_range = {str(r.get("id")) for r in rows}
+    carried_keys = [
+        s.dispute_key
+        for s in DisputeStatus.query.filter(
+            DisputeStatus.status == "in_progress",
+            DisputeStatus.scope_type.is_(None),
+        ).all()
+        if s.dispute_key not in in_range
+    ]
+    carried_ids = set()
+    if carried_keys:
+        extra = run_query(
+            _CARRIED_SQL,
+            {
+                "ids": carried_keys,
+                # The reprocess check needs to reach back to when these failed,
+                # not just into the window being viewed.
+                "ok_from": str(min(_as_date(date_from), date.today() - timedelta(days=90))),
+                "reprocess_to": reprocess_to,
+            },
+        )
+        carried_ids = {str(r.get("id")) for r in extra}
+        rows = rows + extra
 
     hints = _double_pay_hints()
 
@@ -351,6 +417,7 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "hold_balance": hold,
             "settled_clear": settled_clear,
             "double_pay_risk": double_pay_risk,
+            "carried_over": str(r.get("id")) in carried_ids,
             "reprocessed_ok": bool(r.get("reprocessed_ok")),
             "reprocessed_at": str(r.get("reprocessed_at") or ""),
             **_decision_for(r, decisions, scoped),
@@ -476,6 +543,7 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "likely_settled_count": len(likely_settled),
             "settled_clear_count": len(settled_clear),
             "negative_hold_count": len(negative_hold),
+            "carried_over_count": len([d for d in held_rows if d["carried_over"]]),
             "reprocessed_count": len(reprocessed),
             "solved_count": len(solved),
             "in_progress_count": len(in_progress),
