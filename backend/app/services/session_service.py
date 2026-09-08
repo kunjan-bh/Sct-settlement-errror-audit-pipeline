@@ -97,6 +97,14 @@ def close_session(batch_id: int, notes: str | None = None) -> Batch:
     if notes is not None:
         batch.notes = notes.strip() or None
     db.session.commit()
+
+    # Materialise the day's work as transactions so the dashboard, the report
+    # with its charts, and the summary email all work on a session exactly as
+    # they do on an uploaded batch. Imported here to keep the switch out of the
+    # import graph for callers that only read sessions.
+    from app.services.session_materialise import materialise_session
+
+    materialise_session(batch.id)
     return batch
 
 
