@@ -391,15 +391,28 @@ export default function DisputesPage() {
   const rows = useMemo(() => {
     const all = data?.disputes ?? [];
     const live = all.filter(
-      (d) => d.op_status !== "exclude" && !d.reprocessed_ok && !d.likely_settled
+      (d) =>
+        // A wallet-level rule removes its rows entirely; a dispute someone
+        // excluded by hand belongs in the Excluded tab.
+        !(d.op_status === "exclude" && d.op_scope) &&
+        // Anything already decided stays visible in its section whatever the
+        // balance says now -- solving a dispute is what makes the money leave.
+        (d.op_status !== "pending" ||
+          (!d.reprocessed_ok && !d.likely_settled &&
+            !(d.settled_clear && !d.negative_hold)))
     );
+    // One tab per decision. Acting on a dispute moves it out of Disputes and
+    // into its section -- Disputes is what is left to do, not a list of
+    // everything with the done ones still sitting in it.
     const base =
-      filter === "held" ? live.filter((d) => d.held || d.partially_held || d.negative_hold)
-        : filter === "risk" ? live.filter((d) => d.double_pay_risk)
-          : filter === "reprocessed" ? all.filter((d) => d.reprocessed_ok && d.op_status !== "exclude")
-              // "All failures" means all except excluded: an excluded entity
-              // is gone from this tab, not merely filed under another one.
-              : all.filter((d) => d.op_status !== "exclude");
+      filter === "open" ? live.filter((d) => d.op_status === "pending")
+        : filter === "in_progress" ? live.filter((d) => d.op_status === "in_progress")
+          : filter === "solved" ? live.filter((d) => d.op_status === "solved")
+            : filter === "excluded" ? live.filter((d) => d.op_status === "exclude")
+              : live.filter(
+                  (d) => d.double_pay_risk &&
+                         (d.op_status === "pending" || d.op_status === "in_progress")
+                );
     const scoped = entity ? base.filter((d) => d.mapped_partner === entity) : base;
     const q = search.trim().toLowerCase();
     if (!q) return scoped;
