@@ -13,9 +13,10 @@ the server. Nothing in this module writes to it.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
+from app.models.dispute_status import DisputeStatus
 from app.services.core_db import run_query
 from app.services.settings_service import get_settings
 
@@ -42,13 +43,34 @@ def _double_pay_hints() -> tuple[str, ...]:
     return pats or _DEFAULT_DOUBLE_PAY_HINTS
 
 
-# One row per failed settlement, with the merchant's live balance beside it.
-# The join is on merchant_code because that is what both sides key on; the
-# balance function returns one row per merchant, so this does not fan out.
+# Days after the filter window in which a retry still counts as "this one was
+# reprocessed". Matches RETRY_WINDOW_DAYS in the batch flow -- a settlement
+# retried on the next working day is the same money, not a new failure.
+REPROCESS_WINDOW_DAYS = 3
+
+# One row per failed settlement, with the merchant's live balance beside it and
+# a flag for whether the same money later went through.
+#
+# The reprocess test is (merchant_code, amount) with a later timestamp, because
+# nothing else links a retry to its original: CRRN is unique per row, and the
+# ref_id chain only ever runs SUCCESS->SUCCESS or FAILED->FAILED, never
+# FAILED->SUCCESS. Both were checked against the live switch before settling on
+# this. It is the same rule the batch flow already retries on.
+#
+# `ok` is grouped up front rather than written as a correlated EXISTS: the
+# correlated form scans fund_transfer_logs once per failed row and blew the
+# statement timeout on a two-day window.
 _DISPUTE_SQL = """
 WITH bal AS (
     SELECT merchant_code, member_code, total_balance, hold_balance
     FROM supports.get_merchant_balance()
+),
+ok AS (
+    SELECT merchant_code, amount, min(date_time) AS first_ok
+    FROM operators.fund_transfer_logs
+    WHERE date BETWEEN %(date_from)s AND %(reprocess_to)s
+      AND status = 'SUCCESS'
+    GROUP BY merchant_code, amount
 )
 SELECT
     f.id, f.merchant_code, f.merchant_name, f.crrn, f.stan, f.ref_id,
@@ -59,13 +81,21 @@ SELECT
     f.institution_id, f.settlement_frequency, f.medium,
     f.creditor_name, f.creditor_account, f.creditor_mobile,
     f.bank_id, f.branch_id, f.partner_ref_id,
-    b.member_code, b.total_balance, b.hold_balance
+    b.member_code, b.total_balance, b.hold_balance,
+    (ok.first_ok IS NOT NULL AND ok.first_ok > f.date_time) AS reprocessed_ok,
+    ok.first_ok AS reprocessed_at
 FROM operators.fund_transfer_logs f
 LEFT JOIN bal b ON b.merchant_code = f.merchant_code
+LEFT JOIN ok ON ok.merchant_code = f.merchant_code AND ok.amount = f.amount
 WHERE f.date BETWEEN %(date_from)s AND %(date_to)s
   AND f.status = ANY(%(statuses)s)
 ORDER BY f.amount DESC NULLS LAST, f.merchant_code
 """
+
+
+def _as_date(value: str | date) -> date:
+    """A date, whether the caller passed one or an ISO string."""
+    return value if isinstance(value, date) else date.fromisoformat(str(value))
 
 
 def _num(value) -> float:
@@ -97,6 +127,43 @@ def _reason(row: dict) -> str:
     return remark or "Unknown"
 
 
+def _decision_for(row: dict, decisions: dict, scoped: dict) -> dict:
+    """
+    The operator's decision about this settlement.
+
+    A decision on the row itself wins. Failing that, an entity-level exclusion
+    applies -- excluding "Mbank" as a wallet is meant to cover every one of its
+    failures, which is the whole point of excluding an entity rather than
+    forty rows one at a time.
+    """
+    key = str(row.get("id") or "")
+    own = decisions.get(key)
+    if own:
+        return {
+            "op_status": own.status,
+            "op_comment": own.comment,
+            "op_scope": None,
+            "op_updated_at": own.updated_at.isoformat() if own.updated_at else None,
+        }
+
+    for scope_type, value in (
+        ("partner", row.get("partner")),
+        ("bank_or_wallet", row.get("bank_name_or_wallet_name")),
+        ("acquirer", row.get("acquirer_name")),
+        ("mid", row.get("merchant_code")),
+    ):
+        hit = scoped.get((scope_type, (value or "").lower()))
+        if hit:
+            return {
+                "op_status": hit.status,
+                "op_comment": hit.comment,
+                "op_scope": f"{scope_type}:{value}",
+                "op_updated_at": hit.updated_at.isoformat() if hit.updated_at else None,
+            }
+
+    return {"op_status": "pending", "op_comment": None, "op_scope": None, "op_updated_at": None}
+
+
 def build_disputes(date_from: str | date, date_to: str | date) -> dict:
     """
     Failed settlements for a date range, split by whether the money is held.
@@ -111,11 +178,21 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
         {
             "date_from": str(date_from),
             "date_to": str(date_to),
+            "reprocess_to": str(_as_date(date_to) + timedelta(days=REPROCESS_WINDOW_DAYS)),
             "statuses": list(_FAILED_STATUSES),
         },
     )
 
     hints = _double_pay_hints()
+
+    # Operator decisions live in our own database, never on the switch. Loaded
+    # once here rather than per row: a wide range is thousands of failures.
+    decisions = {d.dispute_key: d for d in DisputeStatus.query.all()}
+    scoped = {
+        (d.scope_type, (d.scope_value or "").lower()): d
+        for d in DisputeStatus.query.filter(DisputeStatus.scope_type.isnot(None)).all()
+    }
+
     disputes: list[dict] = []
     seen_mids: set[str] = set()
 
@@ -170,10 +247,22 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "held": held,
             "partially_held": partially_held,
             "double_pay_risk": double_pay_risk,
+            "reprocessed_ok": bool(r.get("reprocessed_ok")),
+            "reprocessed_at": str(r.get("reprocessed_at") or ""),
+            **_decision_for(r, decisions, scoped),
         })
 
-    held_rows = [d for d in disputes if d["held"] or d["partially_held"]]
+    # Excluded and already-reprocessed settlements are not outstanding work:
+    # one was judged not ours to chase, the other already went through. Both
+    # are still returned and counted separately so nothing vanishes silently.
+    excluded = [d for d in disputes if d["op_status"] == "exclude"]
+    reprocessed = [d for d in disputes if d["reprocessed_ok"] and d["op_status"] != "exclude"]
+    live = [d for d in disputes if d["op_status"] != "exclude" and not d["reprocessed_ok"]]
+
+    held_rows = [d for d in live if d["held"] or d["partially_held"]]
     at_risk = [d for d in held_rows if d["double_pay_risk"]]
+    solved = [d for d in held_rows if d["op_status"] == "solved"]
+    in_progress = [d for d in held_rows if d["op_status"] == "in_progress"]
 
     # Money at risk is summed over distinct merchants, not over rows: one pot
     # per merchant, however many failures point at it.
@@ -199,6 +288,11 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "held_amount": round(sum(held_by_mid.values()), 2),
             "at_risk_count": len(at_risk),
             "at_risk_amount": round(sum(d["amount"] for d in at_risk), 2),
+            "excluded_count": len(excluded),
+            "reprocessed_count": len(reprocessed),
+            "solved_count": len(solved),
+            "in_progress_count": len(in_progress),
+            "open_count": len(held_rows) - len(solved),
         },
         "by_partner": sorted(by_partner.values(), key=lambda b: -b["amount"]),
         "disputes": disputes,

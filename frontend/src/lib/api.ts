@@ -691,6 +691,25 @@ export interface Dispute {
   held: boolean;
   partially_held: boolean;
   double_pay_risk: boolean;
+  reprocessed_ok: boolean;
+  reprocessed_at: string;
+  op_status: DisputeOpStatus;
+  op_comment: string | null;
+  /** Set when the status came from an entity-level rule, e.g. "partner:Mbank". */
+  op_scope: string | null;
+  op_updated_at: string | null;
+}
+
+export type DisputeOpStatus = "pending" | "in_progress" | "solved" | "exclude";
+export type DisputeScopeType = "partner" | "bank_or_wallet" | "acquirer" | "mid";
+
+export interface DisputeScope {
+  id: number;
+  status: DisputeOpStatus;
+  comment: string | null;
+  scope_type: DisputeScopeType;
+  scope_value: string;
+  updated_at: string | null;
 }
 
 export interface DisputeTotals {
@@ -702,6 +721,11 @@ export interface DisputeTotals {
   held_amount: number;
   at_risk_count: number;
   at_risk_amount: number;
+  excluded_count: number;
+  reprocessed_count: number;
+  solved_count: number;
+  in_progress_count: number;
+  open_count: number;
 }
 
 export interface DisputeResponse {
@@ -727,4 +751,29 @@ export const disputesApi = {
 
   list: (from: string, to: string) =>
     request<DisputeResponse>(`/disputes?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
+
+  /** Record a decision about one failed settlement. Writes to our database,
+   *  never the switch. */
+  setStatus: (
+    disputeKey: string,
+    body: { status: DisputeOpStatus; comment?: string; mid?: string; crrn?: string | null; amount?: number }
+  ) =>
+    request<{ status: DisputeOpStatus }>(`/disputes/${encodeURIComponent(disputeKey)}/status`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  /** Apply a decision to a whole wallet / aggregator / bank / merchant at
+   *  once. Sending "pending" clears the rule. */
+  setScope: (
+    scopeType: DisputeScopeType,
+    scopeValue: string,
+    body: { status: DisputeOpStatus; comment?: string }
+  ) =>
+    request<unknown>(`/disputes/scope/${scopeType}/${encodeURIComponent(scopeValue)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
+  scopes: () => request<DisputeScope[]>("/disputes/scopes"),
 };
