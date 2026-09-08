@@ -8,3 +8,6 @@ numpy>=2.5.1
 # Headless (Agg) rendering of the Errors & Resolution ring embedded in the
 # end-of-batch summary email -- see services/chart_image.py.
 matplotlib>=3.9
+# Read-only access to the live GetPay/SCT switch (Postgres 15) -- see
+# services/core_db.py. Binary wheel so no local libpq build is needed.
+psycopg[binary]>=3.2
