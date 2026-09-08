@@ -31,6 +31,14 @@ function isoDaysAgo(days: number) {
 
 type Filter = "open" | "risk" | "in_progress" | "solved" | "excluded";
 
+const TAB_LABELS: Record<Filter, string> = {
+  open: "Disputes (open)",
+  risk: "Double-pay risk",
+  in_progress: "In Progress",
+  solved: "Solved",
+  excluded: "Excluded",
+};
+
 const OP_ACTIONS: { key: DisputeOpStatus; label: string; on: string }[] = [
   { key: "in_progress", label: "In Progress", on: "bg-blue-600 border-blue-600 text-white" },
   { key: "solved", label: "Solved", on: "bg-emerald-600 border-emerald-600 text-white" },
@@ -445,23 +453,33 @@ export default function DisputesPage() {
       return next;
     });
 
-  const exportCsv = () => {
-    const head = ["MID", "Merchant", "CRRN", "Amount", "Hold balance", "Reason",
-      "Stopped at", "Aggregator / wallet", "Institution", "Date", "Double-pay risk"];
-    const body = rows.map((d) => [
-      d.mid, d.merchant_name ?? "", d.crrn ?? "", d.amount, d.hold_balance,
-      d.reason, d.current_status ?? "", d.mapped_partner, d.bank_or_wallet ?? "", d.date,
-      d.double_pay_risk ? "YES" : "",
-    ]);
-    const csv = [head, ...body]
-      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
-      .join("\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `disputes_${from}_to_${to}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+  const [exporting, setExporting] = useState(false);
+
+  // Excel rather than CSV: this sheet goes to an aggregator to verify a
+  // settlement, and CSV loses the number formats and the highlighting that
+  // says which rows are the urgent ones.
+  const exportXlsx = async () => {
+    if (!rows.length) return;
+    setExporting(true);
+    setError(null);
+    try {
+      const { blob, filename } = await disputesApi.exportXlsx({
+        from,
+        to,
+        ids: rows.map((d) => String(d.id ?? "")).filter(Boolean),
+        filter_label: TAB_LABELS[filter] + (entity ? ` — ${entity}` : ""),
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not export");
+    } finally {
+      setExporting(false);
+    }
   };
 
   const t = data?.totals;
@@ -591,9 +609,10 @@ export default function DisputesPage() {
           </div>
         </details>
 
-        <button type="button" onClick={exportCsv} disabled={!rows.length}
+        <button type="button" onClick={() => void exportXlsx()} disabled={!rows.length || exporting}
+          title="Download these disputes as an Excel workbook"
           className="inline-flex items-center gap-1.5 px-3 py-2 rounded border border-neutral-300 hover:border-neutral-400 text-neutral-700 text-xs font-semibold disabled:opacity-40 cursor-pointer">
-          <FiDownload /> Export {rows.length ? `(${rows.length})` : ""}
+          <FiDownload /> {exporting ? "Preparing…" : `Export Excel${rows.length ? ` (${rows.length})` : ""}`}
         </button>
       </div>
 

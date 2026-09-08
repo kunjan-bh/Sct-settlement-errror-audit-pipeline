@@ -798,6 +798,31 @@ export const disputesApi = {
     }),
 
   scopes: () => request<DisputeScope[]>("/disputes/scopes"),
+
+  /** Excel of the disputes currently on screen. Sends the visible ids rather
+   *  than the filter, so the sheet is exactly what the operator is looking at;
+   *  the server re-reads the rows so the figures are live. */
+  exportXlsx: async (body: {
+    from: string; to: string; ids: string[]; filter_label?: string;
+  }): Promise<{ blob: Blob; filename: string }> => {
+    const res = await fetch("/api/disputes/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let message = `Export failed (${res.status})`;
+      try {
+        message = (await res.json()).error ?? message;
+      } catch {
+        /* a non-JSON error body is not worth surfacing raw */
+      }
+      throw new Error(message);
+    }
+    const disposition = res.headers.get("Content-Disposition") ?? "";
+    const match = /filename=("?)([^";]+)/.exec(disposition);
+    return { blob: await res.blob(), filename: match?.[2] ?? "disputes.xlsx" };
+  },
 };
 
 // --- Office sessions --------------------------------------------------------

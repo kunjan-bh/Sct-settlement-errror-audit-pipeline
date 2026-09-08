@@ -9,13 +9,15 @@ mailed around and re-imported before anyone can see it.
 Read-only throughout -- see services/core_db.py.
 """
 
-from datetime import date, timedelta
+import io
+from datetime import date, datetime, timedelta
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, send_file
 
 from app.extensions import db
 from app.models.dispute_status import DISPUTE_STATUSES, DisputeStatus
 from app.services.core_db import ReadOnlyViolation, core_db_status
+from app.services.dispute_export import generate_dispute_xlsx
 from app.services.dispute_service import build_disputes
 from app.services.session_service import attach_to_current_session
 
@@ -175,3 +177,56 @@ def list_scopes():
     being suppressed rather than leaving it a mystery."""
     rows = DisputeStatus.query.filter(DisputeStatus.scope_type.isnot(None)).all()
     return jsonify([r.to_dict() for r in rows])
+
+
+@disputes_bp.post("/export")
+def export_disputes():
+    """
+    Excel of the disputes currently on screen.
+
+    Takes the ids the page is showing rather than re-deriving the filter here:
+    the tab, the aggregator dropdown and the search box all live in the
+    browser, and reimplementing them server-side would give two versions of
+    "what is showing" that could disagree. The rows themselves are re-read from
+    the switch, so the sheet carries live figures rather than whatever the page
+    had cached.
+    """
+    payload = request.get_json(silent=True) or {}
+    ids = payload.get("ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "Nothing to export."}), 400
+
+    try:
+        date_from = _parse(payload.get("from") or "", "from")
+        date_to = _parse(payload.get("to") or "", "to")
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    wanted = set(str(i) for i in ids)
+    try:
+        data = build_disputes(date_from, date_to)
+    except Exception as exc:  # noqa: BLE001 - the switch being down is normal
+        return jsonify({
+            "error": f"Could not read the switch: {str(exc).strip().splitlines()[0][:300]}"
+        }), 502
+
+    by_id = {str(d["id"]): d for d in data["disputes"]}
+    # Keep the page's order: the operator sorted or filtered to get here.
+    rows = [by_id[i] for i in (str(x) for x in ids) if i in by_id]
+    if not rows:
+        return jsonify({"error": "None of those disputes are in this date range any more."}), 404
+
+    xlsx = generate_dispute_xlsx(rows, {
+        "date_from": str(date_from),
+        "date_to": str(date_to),
+        "filter_label": str(payload.get("filter_label") or "")[:120],
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+    })
+
+    name = f"disputes_{date_from}_to_{date_to}.xlsx"
+    return send_file(
+        io.BytesIO(xlsx),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=name,
+    )
