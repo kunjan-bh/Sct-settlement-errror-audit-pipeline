@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FiAlertTriangle, FiChevronDown, FiChevronRight, FiDatabase, FiLock,
   FiRefreshCw, FiSearch, FiDownload,
@@ -222,9 +222,29 @@ export default function DisputesPage() {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
+  // Wallet/bank exclusions. Ticked means "not ours to chase" -- those rows
+  // drop out of Disputes entirely, the way excluding an entity works in
+  // Analytics. Unlike Analytics these persist, because deciding an aggregator
+  // settles on its own schedule is an ops decision, not a view setting.
+  const [excluded, setExcluded] = useState<string[]>([]);
+  const [draftExcluded, setDraftExcluded] = useState<string[]>([]);
+  const excludeDetailsRef = useRef<HTMLDetailsElement>(null);
+  const [applying, setApplying] = useState(false);
+
   useEffect(() => {
     disputesApi.status().then(setStatus).catch(() => setStatus(null));
   }, []);
+
+  const loadScopes = useCallback(async () => {
+    try {
+      const s = await disputesApi.scopes();
+      setExcluded(s.filter((x) => x.scope_type === "bank_or_wallet").map((x) => x.scope_value));
+    } catch {
+      setExcluded([]);
+    }
+  }, []);
+
+  useEffect(() => { void loadScopes(); }, [loadScopes]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -278,6 +298,41 @@ export default function DisputesPage() {
       setError(e instanceof Error ? e.message : "Could not apply that exclusion");
     } finally {
       setBusyKey(null);
+    }
+  };
+
+  // Every wallet/bank present in the range, commonest first, so the list is
+  // ordered by how much noise each one is actually making.
+  const availableEntities = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const d of data?.disputes ?? []) {
+      const key = d.bank_or_wallet || d.acquirer_name || d.partner;
+      if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .map(([entity, count]) => ({ entity, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [data]);
+
+  const applyExcluded = async () => {
+    setApplying(true);
+    setError(null);
+    try {
+      const added = draftExcluded.filter((e) => !excluded.includes(e));
+      const removed = excluded.filter((e) => !draftExcluded.includes(e));
+      // "pending" clears a rule rather than storing one, so unticking really
+      // brings the entity back rather than pinning it to a status.
+      await Promise.all([
+        ...added.map((e) => disputesApi.setScope("bank_or_wallet", e, { status: "exclude" })),
+        ...removed.map((e) => disputesApi.setScope("bank_or_wallet", e, { status: "pending" })),
+      ]);
+      if (excludeDetailsRef.current) excludeDetailsRef.current.open = false;
+      await loadScopes();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not apply exclusions");
+    } finally {
+      setApplying(false);
     }
   };
 
@@ -376,6 +431,64 @@ export default function DisputesPage() {
             placeholder="MID, CRRN, merchant, reason…"
             className="pl-8 pr-3 py-2 border border-neutral-300 rounded text-sm w-72" />
         </div>
+
+        <details
+          ref={excludeDetailsRef}
+          className="relative"
+          onToggle={(e) => {
+            if ((e.currentTarget as HTMLDetailsElement).open) setDraftExcluded(excluded);
+          }}
+        >
+          <summary
+            className={`list-none cursor-pointer select-none px-3 py-2 rounded text-xs font-semibold border transition-colors inline-flex items-center gap-1.5 ${
+              excluded.length > 0
+                ? "bg-red-50 border-red-200 text-red-700"
+                : "border-neutral-300 text-neutral-700 hover:border-neutral-400"
+            }`}
+          >
+            Exclude{excluded.length > 0 ? ` (${excluded.length})` : ""}
+            <FiChevronDown className="text-[10px]" />
+          </summary>
+          <div className="absolute right-0 z-20 mt-2 w-80 max-h-96 flex flex-col bg-white border border-neutral-200 rounded-lg shadow-lg p-2">
+            <p className="text-[11px] text-neutral-400 px-2 pt-1 pb-2 leading-snug">
+              Tick a wallet, bank or aggregator to drop it from Disputes — for ones that
+              settle on their own schedule and are not ours to chase. Nothing changes
+              until you click OK.
+            </p>
+            <div className="overflow-y-auto">
+              {availableEntities.length === 0 && (
+                <p className="text-xs text-neutral-400 px-2 py-3">No entities in range yet.</p>
+              )}
+              {availableEntities.map((e) => (
+                <label
+                  key={e.entity}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-neutral-50 text-sm cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={draftExcluded.includes(e.entity)}
+                    onChange={() =>
+                      setDraftExcluded((prev) =>
+                        prev.includes(e.entity)
+                          ? prev.filter((x) => x !== e.entity)
+                          : [...prev, e.entity]
+                      )
+                    }
+                    className="rounded border-neutral-300"
+                  />
+                  <span className="flex-1 text-neutral-700 truncate">{e.entity}</span>
+                  <span className="text-[11px] text-neutral-400 tabular-nums">{e.count}</span>
+                </label>
+              ))}
+            </div>
+            <div className="flex justify-end gap-2 pt-2 mt-1 border-t border-neutral-100">
+              <button type="button" disabled={applying} onClick={() => void applyExcluded()}
+                className="px-3 py-1.5 rounded bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-semibold disabled:opacity-50 cursor-pointer">
+                {applying ? "Applying…" : "OK"}
+              </button>
+            </div>
+          </div>
+        </details>
 
         <button type="button" onClick={exportCsv} disabled={!rows.length}
           className="inline-flex items-center gap-1.5 px-3 py-2 rounded border border-neutral-300 hover:border-neutral-400 text-neutral-700 text-xs font-semibold disabled:opacity-40 cursor-pointer">
