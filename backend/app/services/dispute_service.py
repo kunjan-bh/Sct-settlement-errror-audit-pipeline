@@ -372,10 +372,11 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
         if d["held"] or d["partially_held"]:
             b["held"] += 1
 
-    # Every headline number is net of exclusions. An excluded entity is not
-    # work that got done and not work that is outstanding -- it is nothing, and
-    # leaving it in a total only invites "these don't add up".
-    counted = [d for d in disputes if d["op_status"] != "exclude"]
+    # Every headline number counts only failures still standing. Excluded,
+    # already reprocessed, and ruled out by the merchant's balance are all
+    # finished business: none is work outstanding, and leaving any of them in a
+    # total only invites "these don't add up". `live` is exactly that set.
+    counted = live
 
     return {
         "range": {"from": str(date_from), "to": str(date_to)},

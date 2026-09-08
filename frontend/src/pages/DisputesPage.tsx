@@ -29,7 +29,7 @@ function isoDaysAgo(days: number) {
   return d.toISOString().slice(0, 10);
 }
 
-type Filter = "held" | "risk" | "reprocessed" | "settled" | "all";
+type Filter = "held" | "risk" | "all";
 
 const OP_ACTIONS: { key: DisputeOpStatus; label: string; on: string }[] = [
   { key: "in_progress", label: "In Progress", on: "bg-blue-600 border-blue-600 text-white" },
@@ -407,6 +407,12 @@ export default function DisputesPage() {
   };
 
   const t = data?.totals;
+  const liveCount = useMemo(
+    () => (data?.disputes ?? []).filter(
+      (d) => d.op_status !== "exclude" && !d.reprocessed_ok && !d.likely_settled
+    ).length,
+    [data]
+  );
 
   return (
     <div className="max-w-7xl mx-auto px-8 py-10 space-y-6 font-sans">
@@ -558,7 +564,7 @@ export default function DisputesPage() {
               sub="ledger problem — hold below zero" tone="red" />
           )}
           <Kpi label="All failures" value={t.failed.toLocaleString()}
-            sub={`${t.merchants} merchants · ${t.reprocessed_count} reprocessed`} />
+            sub={`${t.merchants} merchants still open`} />
         </div>
       )}
 
@@ -566,9 +572,7 @@ export default function DisputesPage() {
         {([
           ["held", `Disputes${t ? ` (${t.held_count})` : ""}`],
           ["risk", `Double-pay risk${t ? ` (${t.at_risk_count})` : ""}`],
-          ["reprocessed", `Already reprocessed${t ? ` (${t.reprocessed_count})` : ""}`],
-          ["settled", `Covered by balance${t ? ` (${t.likely_settled_count})` : ""}`],
-          ["all", `All failures${t ? ` (${t.failed})` : ""}`],
+          ["all", `All failures${t ? ` (${liveCount})` : ""}`],
         ] as [Filter, string][]).map(([key, label]) => (
           <button key={key} type="button" onClick={() => setFilter(key)}
             className={`px-3.5 py-2 text-xs font-semibold border-b-2 -mb-px transition-colors cursor-pointer ${
@@ -581,17 +585,21 @@ export default function DisputesPage() {
         ))}
       </div>
 
+      {t && !!(t.reprocessed_count + t.likely_settled_count + t.excluded_count) && (
+        <p className="text-[11px] text-neutral-400 -mt-2">
+          Not listed: {t.reprocessed_count.toLocaleString()} already reprocessed,{" "}
+          {t.likely_settled_count.toLocaleString()} covered by the merchant's balance,{" "}
+          {t.excluded_count.toLocaleString()} excluded.
+        </p>
+      )}
+
       {loading && <p className="text-neutral-400 text-sm py-10">Reading the switch…</p>}
 
       {!loading && !rows.length && (
         <p className="text-neutral-500 text-sm py-10">
           {filter === "held"
             ? "No failed settlement in this range has money still held on the merchant."
-            : filter === "reprocessed"
-              ? "Nothing in this range settled successfully on a later attempt."
-              : filter === "settled"
-                ? "No failure was ruled out by the merchant's balance."
-              : "Nothing matches."}
+            : "Nothing matches."}
         </p>
       )}
 
