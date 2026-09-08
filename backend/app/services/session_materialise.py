@@ -105,6 +105,28 @@ def materialise_session(batch_id: int) -> dict:
 
     rows = run_query(_DAY_SQL, {"date_from": date_from, "date_to": date_to})
 
+    # The Disputes page rules a failure out when it was reprocessed, or when
+    # the merchant's balance shows the money went out. Those are settled, not
+    # outstanding. Without this the batch called 127 of them unsolved while the
+    # Disputes page listed 2 as open -- the same day's work, two answers.
+    #
+    # They land on `retry_resolved`, which is exactly this idea in the batch
+    # flow ("Reprocessed & Settled") and is already excluded from every count
+    # and chart.
+    from app.services.dispute_service import build_disputes
+
+    resolved_ids = {
+        str(d["id"])
+        for d in build_disputes(date_from, date_to)["disputes"]
+        if d["reprocessed_ok"] or d["likely_settled"]
+        or (d["settled_clear"] and not d["negative_hold"])
+    }
+    # A settlement someone ruled on keeps their decision. Solving a dispute is
+    # what makes the money leave, so sweeping it into "reprocessed & settled"
+    # would credit the switch for work the operator did and report 15 solved
+    # where 77 were.
+    resolved_ids -= set(by_key.keys())
+
     Transaction.query.filter_by(batch_id=batch_id).delete(synchronize_session=False)
     IssueStatus.query.filter_by(batch_id=batch_id).delete(synchronize_session=False)
     db.session.flush()
@@ -139,7 +161,7 @@ def materialise_session(batch_id: int) -> dict:
             error_side=result.side,
             error_category=result.category,
             matched_rule_id=result.matched_rule_id,
-            retry_resolved=False,
+            retry_resolved=str(r.get("id")) in resolved_ids,
             extra_data={
                 "CRRN": r.get("crrn"),
                 "STAN": r.get("stan"),
@@ -151,7 +173,7 @@ def materialise_session(batch_id: int) -> dict:
             },
         ))
 
-        if txn_status == "success":
+        if txn_status == "success" or str(r.get("id")) in resolved_ids:
             continue
 
         key = (result.side, issue_partner_key(partner_name, bucket), result.category, txn_status)
