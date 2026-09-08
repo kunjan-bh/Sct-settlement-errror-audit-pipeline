@@ -1,0 +1,205 @@
+"""
+Disputes: failed settlements whose money is still sitting on the merchant.
+
+A settlement that failed is not automatically a dispute. It becomes one when
+the amount never went anywhere -- the merchant's balance is still holding it.
+That pairing is what makes a case worth chasing, and it is only visible by
+reading the switch and the balance function together, which is why this
+cannot be built from the settlement export alone.
+
+Everything here reads the live switch through core_db, which is read-only at
+the server. Nothing in this module writes to it.
+"""
+
+from __future__ import annotations
+
+from datetime import date
+from decimal import Decimal
+
+from app.services.core_db import run_query
+from app.services.settings_service import get_settings
+
+# A failed settlement carries the failure reason in two places that disagree:
+# `status` is the coarse verdict and `current_status` is where in the transfer
+# it stopped. Ops needs the second one -- "FUND_TRANSFER_PENDING" and
+# "VALIDATION_FAILED" are chased completely differently.
+_FAILED_STATUSES = ("FAILED", "PENDING")
+
+# Held money plus one of these remarks is the dangerous combination: the far
+# end may well have paid out, so the merchant could be paid twice if this is
+# simply retried. Kept in step with the operator-editable verify list.
+_DEFAULT_DOUBLE_PAY_HINTS = ("connection reset", "connection was closed")
+
+
+def _double_pay_hints() -> tuple[str, ...]:
+    """The verify-before-retry patterns the operator maintains in Settings,
+    falling back to the built-in pair."""
+    try:
+        raw = (get_settings() or {}).get("verify_remark_patterns") or ""
+    except Exception:  # noqa: BLE001 - settings must never break a read
+        raw = ""
+    pats = tuple(p.strip().lower() for p in str(raw).replace(";", ",").split(",") if p.strip())
+    return pats or _DEFAULT_DOUBLE_PAY_HINTS
+
+
+# One row per failed settlement, with the merchant's live balance beside it.
+# The join is on merchant_code because that is what both sides key on; the
+# balance function returns one row per merchant, so this does not fan out.
+_DISPUTE_SQL = """
+WITH bal AS (
+    SELECT merchant_code, member_code, total_balance, hold_balance
+    FROM supports.get_merchant_balance()
+)
+SELECT
+    f.id, f.merchant_code, f.merchant_name, f.crrn, f.stan, f.ref_id,
+    f.amount, f.service_charge, f.date, f.date_time,
+    f.status, f.current_status, f.status_code,
+    f.remarks, f.remark_two,
+    f.partner, f.acquirer_name, f.bank_name_or_wallet_name, f.wallet_code,
+    f.institution_id, f.settlement_frequency, f.medium,
+    f.creditor_name, f.creditor_account, f.creditor_mobile,
+    f.bank_id, f.branch_id, f.partner_ref_id,
+    b.member_code, b.total_balance, b.hold_balance
+FROM operators.fund_transfer_logs f
+LEFT JOIN bal b ON b.merchant_code = f.merchant_code
+WHERE f.date BETWEEN %(date_from)s AND %(date_to)s
+  AND f.status = ANY(%(statuses)s)
+ORDER BY f.amount DESC NULLS LAST, f.merchant_code
+"""
+
+
+def _num(value) -> float:
+    """Decimal/None from the switch as a plain float, for JSON."""
+    if value is None:
+        return 0.0
+    if isinstance(value, Decimal):
+        return float(value)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _reason(row: dict) -> str:
+    """
+    One human sentence for why this failed.
+
+    `remarks` is the switch's own message and is usually the useful one, but it
+    is bare "Failed" often enough that current_status has to fill in -- an
+    operator triaging a list cannot act on "Failed".
+    """
+    remark = (row.get("remarks") or "").strip()
+    current = (row.get("current_status") or "").strip()
+    if remark and remark.lower() not in ("failed", "-", "n/a", "null"):
+        return remark
+    if current:
+        return current.replace("_", " ").title()
+    return remark or "Unknown"
+
+
+def build_disputes(date_from: str | date, date_to: str | date) -> dict:
+    """
+    Failed settlements for a date range, split by whether the money is held.
+
+    Returns every failure, flagged -- rather than only the held ones -- because
+    "this failed and the money is NOT held" is the answer to "where did it go",
+    and hiding those rows just moves the question somewhere this app cannot
+    answer.
+    """
+    rows = run_query(
+        _DISPUTE_SQL,
+        {
+            "date_from": str(date_from),
+            "date_to": str(date_to),
+            "statuses": list(_FAILED_STATUSES),
+        },
+    )
+
+    hints = _double_pay_hints()
+    disputes: list[dict] = []
+    seen_mids: set[str] = set()
+
+    for r in rows:
+        mid = (r.get("merchant_code") or "").strip()
+        amount = _num(r.get("amount"))
+        hold = _num(r.get("hold_balance"))
+        remark_blob = f"{r.get('remarks') or ''} {r.get('remark_two') or ''}".lower()
+        double_pay_risk = any(h in remark_blob for h in hints)
+
+        # "Held" means the merchant is currently holding at least this much.
+        # A merchant with several failures shows the same hold against each --
+        # that is honest: the balance is one pot, not one per failure, and
+        # claiming otherwise would double-count the money at risk.
+        held = hold > 0 and hold >= amount
+        partially_held = hold > 0 and not held
+
+        seen_mids.add(mid)
+        disputes.append({
+            "id": r.get("id"),
+            "mid": mid,
+            "merchant_name": r.get("merchant_name"),
+            "crrn": r.get("crrn"),
+            "stan": r.get("stan"),
+            "ref_id": r.get("ref_id"),
+            "amount": amount,
+            "service_charge": _num(r.get("service_charge")),
+            "date": str(r.get("date") or ""),
+            "date_time": str(r.get("date_time") or ""),
+            "status": r.get("status"),
+            "current_status": r.get("current_status"),
+            "status_code": r.get("status_code"),
+            "reason": _reason(r),
+            "remarks": r.get("remarks"),
+            "remark_two": r.get("remark_two"),
+            "partner": r.get("partner"),
+            "acquirer_name": r.get("acquirer_name"),
+            "bank_or_wallet": r.get("bank_name_or_wallet_name"),
+            "wallet_code": r.get("wallet_code"),
+            "institution_id": r.get("institution_id"),
+            "settlement_frequency": r.get("settlement_frequency"),
+            "medium": r.get("medium"),
+            "creditor_name": r.get("creditor_name"),
+            "creditor_account": r.get("creditor_account"),
+            "creditor_mobile": r.get("creditor_mobile"),
+            "bank_id": r.get("bank_id"),
+            "branch_id": r.get("branch_id"),
+            "partner_ref_id": r.get("partner_ref_id"),
+            "member_code": r.get("member_code"),
+            "total_balance": _num(r.get("total_balance")),
+            "hold_balance": hold,
+            "held": held,
+            "partially_held": partially_held,
+            "double_pay_risk": double_pay_risk,
+        })
+
+    held_rows = [d for d in disputes if d["held"] or d["partially_held"]]
+    at_risk = [d for d in held_rows if d["double_pay_risk"]]
+
+    # Money at risk is summed over distinct merchants, not over rows: one pot
+    # per merchant, however many failures point at it.
+    held_by_mid = {d["mid"]: d["hold_balance"] for d in held_rows}
+
+    by_partner: dict[str, dict] = {}
+    for d in disputes:
+        key = d["partner"] or d["acquirer_name"] or "Unmapped"
+        b = by_partner.setdefault(key, {"partner": key, "count": 0, "amount": 0.0, "held": 0})
+        b["count"] += 1
+        b["amount"] += d["amount"]
+        if d["held"] or d["partially_held"]:
+            b["held"] += 1
+
+    return {
+        "range": {"from": str(date_from), "to": str(date_to)},
+        "totals": {
+            "failed": len(disputes),
+            "merchants": len(seen_mids),
+            "failed_amount": round(sum(d["amount"] for d in disputes), 2),
+            "held_count": len(held_rows),
+            "held_merchants": len(held_by_mid),
+            "held_amount": round(sum(held_by_mid.values()), 2),
+            "at_risk_count": len(at_risk),
+            "at_risk_amount": round(sum(d["amount"] for d in at_risk), 2),
+        },
+        "by_partner": sorted(by_partner.values(), key=lambda b: -b["amount"]),
+        "disputes": disputes,
+    }

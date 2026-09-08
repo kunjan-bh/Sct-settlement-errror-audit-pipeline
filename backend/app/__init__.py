@@ -42,4 +42,7 @@ def create_app(config_class=Config):
     from app.routes.issuer_acquirer import issuer_acquirer_bp
     app.register_blueprint(issuer_acquirer_bp)
 
+    from app.routes.disputes import disputes_bp
+    app.register_blueprint(disputes_bp)
+
     return app

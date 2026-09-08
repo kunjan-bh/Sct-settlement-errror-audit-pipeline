@@ -650,3 +650,81 @@ export const partnerMappingsApi = {
 
   aggregatorNames: () => request<string[]>("/partner-mappings/aggregators"),
 };
+
+// --- Disputes ---------------------------------------------------------------
+// Failed settlements read live from the switch, paired with the merchant's
+// current hold balance. No upload: this tab reads the source directly.
+
+export interface Dispute {
+  id: string | null;
+  mid: string;
+  merchant_name: string | null;
+  crrn: string | null;
+  stan: string | null;
+  ref_id: string | null;
+  amount: number;
+  service_charge: number;
+  date: string;
+  date_time: string;
+  status: string | null;
+  current_status: string | null;
+  status_code: string | null;
+  reason: string;
+  remarks: string | null;
+  remark_two: string | null;
+  partner: string | null;
+  acquirer_name: string | null;
+  bank_or_wallet: string | null;
+  wallet_code: string | null;
+  institution_id: string | null;
+  settlement_frequency: string | null;
+  medium: string | null;
+  creditor_name: string | null;
+  creditor_account: string | null;
+  creditor_mobile: string | null;
+  bank_id: string | null;
+  branch_id: string | null;
+  partner_ref_id: string | null;
+  member_code: string | null;
+  total_balance: number;
+  hold_balance: number;
+  held: boolean;
+  partially_held: boolean;
+  double_pay_risk: boolean;
+}
+
+export interface DisputeTotals {
+  failed: number;
+  merchants: number;
+  failed_amount: number;
+  held_count: number;
+  held_merchants: number;
+  held_amount: number;
+  at_risk_count: number;
+  at_risk_amount: number;
+}
+
+export interface DisputeResponse {
+  range: { from: string; to: string };
+  totals: DisputeTotals;
+  by_partner: { partner: string; count: number; amount: number; held: number }[];
+  disputes: Dispute[];
+}
+
+export interface CoreDbStatus {
+  configured: boolean;
+  host: string;
+  port: number;
+  database: string;
+  read_only: boolean;
+  reachable: boolean;
+  error: string | null;
+  latency_ms: number | null;
+}
+
+export const disputesApi = {
+  status: () => request<CoreDbStatus>("/disputes/status"),
+
+  list: (from: string, to: string) =>
+    request<DisputeResponse>(`/disputes?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
+};

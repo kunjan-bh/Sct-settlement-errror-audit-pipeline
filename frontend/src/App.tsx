@@ -8,6 +8,7 @@ import AnalyticsPage from "./pages/AnalyticsPage";
 import SettlementTypePage from "./pages/SettlementTypePage";
 import SettingsPage from "./pages/SettingsPage";
 import IssuerAcquirerPage from "./pages/IssuerAcquirerPage";
+import DisputesPage from "./pages/DisputesPage";
 
 function App() {
   return (
@@ -22,6 +23,7 @@ function App() {
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/settlement-type" element={<SettlementTypePage />} />
           <Route path="/issuer-acquirer" element={<IssuerAcquirerPage />} />
+          <Route path="/disputes" element={<DisputesPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Routes>
