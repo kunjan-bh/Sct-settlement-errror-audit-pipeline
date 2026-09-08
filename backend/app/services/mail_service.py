@@ -157,7 +157,7 @@ def _default_body_html(batch, stats: dict) -> str:
         )
 
     return f"""<p style="margin:0 0 14px 0;">Dear Sir,</p>
-<p style="margin:0 0 14px 0;">Please find below the QR transaction analysis summary for
+<p style="margin:0 0 14px 0;">Please find below the QR settlement analysis summary for
 <strong>{_escape(batch.name)}</strong>.</p>
 
 <div style="margin:0 0 18px 0;padding:10px 14px;border-left:2px solid #cccccc;">
@@ -165,8 +165,8 @@ def _default_body_html(batch, stats: dict) -> str:
 </div>
 
 <table style="border-collapse:collapse;font-size:13px;margin:0 0 18px 0;">
-  {row("Total transactions", stats["total_transactions"])}
-  {row("Error transactions", stats["total_errors"])}
+  {row("Total QR settlement transactions", stats["total_transactions"])}
+  {row("Failed settlements", stats["total_errors"])}
   {row("Failed", s["failed"])}
   {row("Lo Progress", s["lo_progress"])}
   {row("Pending", s["pending"])}
@@ -243,10 +243,10 @@ def build_batch_email(batch_id: int) -> dict:
     png = render_error_resolution_png(
         stats["status_breakdown"],
         stats["resolution"],
-        title=f"{batch.name} — {stats['total_errors']:,} error transactions",
+        title=f"{batch.name} — {stats['total_errors']:,} failed settlements",
     )
     volume_png = render_entity_volume_png(
-        stats["per_entity"], title="Error volume by aggregator / bank"
+        stats["per_entity"], title="Failed settlements by aggregator / bank"
     )
 
     return {
@@ -329,7 +329,7 @@ def send_batch_email(
     if volume_png:
         chart_html += (
             f'<div style="margin:18px 0;">'
-            f'<img src="cid:{volume_cid[1:-1]}" alt="Error volume by aggregator" '
+            f'<img src="cid:{volume_cid[1:-1]}" alt="Failed settlements by aggregator" '
             f'style="max-width:100%;height:auto;" /></div>'
         )
 

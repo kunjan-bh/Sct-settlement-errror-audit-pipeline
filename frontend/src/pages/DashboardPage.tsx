@@ -394,12 +394,15 @@ export default function DashboardPage() {
       {tab === "solve" && (
       <>
       <section className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
-        <StatCard label="Total Txns" value={dashboard.totals.total_transactions} />
-        <StatCard label="Pending" value={dashboard.totals.pending} />
-        <StatCard label="Failed" value={dashboard.totals.failed} />
+        {/* These count QR *settlement* transactions -- paying a merchant their
+            takings -- not the QR payments customers made. "Failed" on its own
+            read as if the customer's payment had failed. */}
+        <StatCard label="Total Settlements" value={dashboard.totals.total_transactions} />
+        <StatCard label="Pending Settlement" value={dashboard.totals.pending} />
+        <StatCard label="Failed Settlement" value={dashboard.totals.failed} />
         <StatCard label="Lo Progress" value={dashboard.totals.lo_progress} />
-        <StatCard label="SCT Failed" value={dashboard.totals.transaction_failed} />
-        <StatCard label="Success" value={dashboard.totals.success_issues} />
+        <StatCard label="Failed (SCT side)" value={dashboard.totals.transaction_failed} />
+        <StatCard label="Settled" value={dashboard.totals.success_issues} />
         <StatCard label="No Aggregator" value={dashboard.totals.no_aggregator} />
         <StatCard label="Aggregators" value={dashboard.totals.total_aggregators} />
       </section>
