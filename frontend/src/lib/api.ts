@@ -777,3 +777,48 @@ export const disputesApi = {
 
   scopes: () => request<DisputeScope[]>("/disputes/scopes"),
 };
+
+// --- Office sessions --------------------------------------------------------
+// A session IS the batch. It opens when work starts, collects every dispute
+// decision made while open, and closes at the end of the day with a report.
+
+export interface Session {
+  id: number;
+  name: string;
+  kind: "session" | "upload";
+  status: "open" | "finished";
+  created_at: string | null;
+  finished_at: string | null;
+  notes: string | null;
+}
+
+export interface SessionActivity {
+  batch: Session;
+  totals: {
+    handled: number;
+    solved: number;
+    in_progress: number;
+    excluded: number;
+    amount_handled: number;
+    amount_solved: number;
+  };
+  solved: { mid: string; crrn: string | null; amount: number; comment: string | null }[];
+  in_progress: { mid: string; crrn: string | null; amount: number; comment: string | null }[];
+}
+
+export const sessionsApi = {
+  /** The running session, or null. */
+  current: () => request<Session | null>("/sessions/current"),
+
+  /** Open a session. Safe to call twice — returns the running one. */
+  start: (name?: string) =>
+    request<Session>("/sessions", { method: "POST", body: JSON.stringify(name ? { name } : {}) }),
+
+  close: (id: number, notes?: string) =>
+    request<Session & { activity: SessionActivity["totals"] }>(`/sessions/${id}/close`, {
+      method: "POST",
+      body: JSON.stringify(notes === undefined ? {} : { notes }),
+    }),
+
+  activity: (id: number) => request<SessionActivity>(`/sessions/${id}/activity`),
+};

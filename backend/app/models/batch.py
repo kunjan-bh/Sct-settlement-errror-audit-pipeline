@@ -25,6 +25,15 @@ class Batch(db.Model):
 
     status = db.Column(db.String(16), nullable=False, default="open")
 
+    # "upload"  -- a settlement Excel was ingested; transactions hang off it.
+    # "session" -- an office session. No spreadsheet: the batch is opened when
+    #              someone sits down to work, collects the dispute decisions
+    #              they make while it is open, and is closed at the end of the
+    #              day to produce the report.
+    # Both kinds share this table so the report, notes and email flow work the
+    # same either way, and so the nine existing upload batches keep working.
+    kind = db.Column(db.String(16), nullable=False, default="upload", index=True)
+
 
 
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
@@ -46,12 +55,17 @@ class Batch(db.Model):
     issue_statuses = db.relationship(
         "IssueStatus", backref="batch", cascade="all, delete-orphan", lazy="dynamic"
     )
+    # Dispute decisions made while this session was open. No cascade delete:
+    # a decision about a live settlement outlives the session it was taken in,
+    # and losing "we already checked this one" would mean chasing it twice.
+    dispute_statuses = db.relationship("DisputeStatus", backref="batch", lazy="dynamic")
 
     def to_dict(self):
         return {
             "id": self.id,
             "name": self.name,
             "status": self.status,
+            "kind": self.kind,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "notes": self.notes,

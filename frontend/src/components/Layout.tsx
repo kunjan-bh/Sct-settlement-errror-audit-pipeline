@@ -1,9 +1,9 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { FiChevronDown, FiSettings } from "react-icons/fi";
+import SessionBar from "./SessionBar";
 
 // Batch-scoped workflow, grouped under one "Settlement Error" hover menu.
 const settlementItems = [
-  { to: "/upload", label: "Upload" },
   { to: "/batches", label: "Batches" },
   { to: "/analytics", label: "Analytics" },
 ];
@@ -135,6 +135,7 @@ export default function Layout() {
           </NavLink>
         </div>
       </nav>
+      <SessionBar />
       <Outlet />
     </div>
   );

@@ -17,6 +17,7 @@ from app.extensions import db
 from app.models.dispute_status import DISPUTE_STATUSES, DisputeStatus
 from app.services.core_db import ReadOnlyViolation, core_db_status
 from app.services.dispute_service import build_disputes
+from app.services.session_service import attach_to_current_session
 
 disputes_bp = Blueprint("disputes", __name__, url_prefix="/api/disputes")
 
@@ -114,6 +115,9 @@ def set_dispute_status(dispute_key):
             row.amount = float(payload["amount"])
         except (TypeError, ValueError):
             pass
+
+    # Working the list is what fills in the batch -- no separate filing step.
+    attach_to_current_session(row)
 
     db.session.commit()
     return jsonify(row.to_dict())

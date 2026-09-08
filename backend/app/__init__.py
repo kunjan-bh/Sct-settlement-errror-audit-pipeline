@@ -45,4 +45,7 @@ def create_app(config_class=Config):
     from app.routes.disputes import disputes_bp
     app.register_blueprint(disputes_bp)
 
+    from app.routes.sessions import sessions_bp
+    app.register_blueprint(sessions_bp)
+
     return app

@@ -47,6 +47,11 @@ class DisputeStatus(db.Model):
     status = db.Column(db.String(16), nullable=False, default="pending")
     comment = db.Column(db.Text, nullable=True)
 
+    # The office session this decision was taken in. Stamped automatically
+    # when the decision is recorded, so nobody has to file anything by hand --
+    # working the list IS filling in the batch.
+    batch_id = db.Column(db.Integer, db.ForeignKey("batches.id"), nullable=True, index=True)
+
     # Entity-level exclusions: ("partner", "Mbank"), ("bank_or_wallet", "..."),
     # ("mid", "004..."). Null for a decision about this one settlement.
     scope_type = db.Column(db.String(24), nullable=True)
@@ -71,6 +76,7 @@ class DisputeStatus(db.Model):
             "partner_name": self.partner_name,
             "status": self.status,
             "comment": self.comment,
+            "batch_id": self.batch_id,
             "scope_type": self.scope_type,
             "scope_value": self.scope_value,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
