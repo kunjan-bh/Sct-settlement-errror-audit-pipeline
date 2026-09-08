@@ -406,6 +406,11 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
         return [d for d in held_rows if d["op_status"] == status]
 
     pending_rows = _bucket("pending")
+    # Outstanding work is what is still to be done. A solved dispute is not a
+    # dispute any more and its money has left the merchant; an excluded one was
+    # judged not ours. Counting either as outstanding overstates both the queue
+    # and the money at stake.
+    outstanding_rows = [d for d in held_rows if d["op_status"] in ("pending", "in_progress")]
     in_progress_rows = _bucket("in_progress")
     solved_rows = _bucket("solved")
     row_excluded_rows = _bucket("exclude")
@@ -423,7 +428,7 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
     # the failures it is standing against (a merchant holding 120 against a
     # single failed 100 is 100 in dispute, not 120).
     held_by_mid = {
-        d["mid"]: d["hold_balance"] for d in held_rows
+        d["mid"]: d["hold_balance"] for d in outstanding_rows
     }  # kept for the merchant count only
     likely_settled = [
         d for d in disputes
@@ -450,7 +455,7 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
     # already reprocessed, and ruled out by the merchant's balance are all
     # finished business: none is work outstanding, and leaving any of them in a
     # total only invites "these don't add up". `live` is exactly that set.
-    counted = live
+    counted = outstanding_rows
 
     return {
         "range": {"from": str(date_from), "to": str(date_to)},
@@ -458,11 +463,12 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "failed": len(counted),
             "merchants": len({d["mid"] for d in counted}),
             "failed_amount": round(sum(d["amount"] for d in counted), 2),
-            "held_count": len(held_rows),
+            "held_count": len(outstanding_rows),
+            "listed_count": len(held_rows),
             "held_merchants": len(held_by_mid),
             "held_amount": round(sum(
                 d["amount"] if d["held"] else d.get("covered_amount", 0.0) if not d["negative_hold"] else 0.0
-                for d in held_rows
+                for d in outstanding_rows
             ), 2),
             "at_risk_count": len(at_risk),
             "at_risk_amount": round(sum(d["amount"] for d in at_risk), 2),

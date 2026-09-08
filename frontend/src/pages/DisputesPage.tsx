@@ -576,19 +576,18 @@ export default function DisputesPage() {
 
       {t && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Kpi label="Money held" value={shortMoney(t.held_amount)}
-            sub={`${t.held_merchants} merchant${t.held_merchants === 1 ? "" : "s"} — what the holds cover`} tone="amber" />
+          <Kpi label="Money at stake" value={shortMoney(t.held_amount)}
+            sub={`${t.held_merchants} merchant${t.held_merchants === 1 ? "" : "s"} — still outstanding`} tone="amber" />
           <Kpi label="Disputes" value={t.held_count.toLocaleString()}
-            sub={`${t.pending_count} open · ${t.in_progress_count} in progress · ${t.solved_count} solved`}
-            tone="amber" />
+            sub={`${t.pending_count} open · ${t.in_progress_count} in progress`} tone="amber" />
           <Kpi label="Double-pay risk" value={t.at_risk_count.toLocaleString()}
             sub={shortMoney(t.at_risk_amount)} tone={t.at_risk_count ? "red" : "neutral"} />
           {!!t.negative_hold_count && (
             <Kpi label="Negative hold" value={t.negative_hold_count.toLocaleString()}
               sub="ledger problem — hold below zero" tone="red" />
           )}
-          <Kpi label="Still outstanding" value={t.failed.toLocaleString()}
-            sub={`${t.merchants} merchants`} />
+          <Kpi label="Done this range" value={(t.solved_count + t.row_excluded_count).toLocaleString()}
+            sub={`${t.solved_count} solved · ${t.row_excluded_count} excluded`} />
         </div>
       )}
 
