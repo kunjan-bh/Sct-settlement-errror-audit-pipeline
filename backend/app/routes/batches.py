@@ -21,6 +21,7 @@ from app.services.report_generator import (
     generate_aggregator_report_bytes,
     generate_error_classification_bytes,
     generate_report_bytes,
+    report_bytes_for_batch,
 )
 
 batches_bp = Blueprint("batches", __name__, url_prefix="/api/batches")
@@ -181,7 +182,7 @@ def download_report(batch_id):
     Generates and returns the 3-sheet Excel report as a file response.
     """
     batch = Batch.query.get_or_404(batch_id)
-    report_bytes = generate_report_bytes(batch.id)
+    report_bytes = report_bytes_for_batch(batch.id)
 
     filename = f"SmartQR_Settlement_Report_{batch.name}.xlsx"
     return send_file(

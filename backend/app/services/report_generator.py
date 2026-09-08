@@ -139,6 +139,24 @@ def invalidate_report_cache(batch_id: int | None = None) -> None:
         _REPORT_CACHE.pop(batch_id, None)
 
 
+def report_bytes_for_batch(batch_id: int) -> bytes:
+    """
+    The report for a batch, whichever kind it is.
+
+    Session batches have no ingested transactions -- their content is the
+    dispute decisions taken while they were open -- so they get their own
+    workbook. Callers (download, email attachment) should use this rather than
+    generate_report_bytes so both kinds of batch work everywhere.
+    """
+    from app.models.batch import Batch as _Batch
+    from app.services.session_report import generate_session_report_bytes
+
+    batch = _Batch.query.get_or_404(batch_id)
+    if getattr(batch, "kind", "upload") == "session":
+        return generate_session_report_bytes(batch_id)
+    return generate_report_bytes(batch_id)
+
+
 def generate_report_bytes(batch_id: int) -> bytes:
     """
     Cached front door to _build_report_bytes.

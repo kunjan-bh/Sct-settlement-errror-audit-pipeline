@@ -10,14 +10,13 @@ import { sessionsApi, type Session, type SessionActivity } from "../lib/api";
  * of the day with the report of what was handled. Nothing is filed by hand --
  * working the disputes list is what fills the batch in.
  *
- * Lives in the layout rather than on the Disputes page so the running session
- * is visible wherever you are: the one thing you must not forget is that it is
- * still open.
+ * Sits directly above the disputes list it records, so starting a session,
+ * working it, and closing it are one motion in one place.
  */
 
 const money = (n: number) => `NPR ${Math.round(n).toLocaleString("en-NP")}`;
 
-export default function SessionBar() {
+export default function SessionBar({ onChanged }: { onChanged?: () => void } = {}) {
   const [session, setSession] = useState<Session | null>(null);
   const [activity, setActivity] = useState<SessionActivity["totals"] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -52,6 +51,7 @@ export default function SessionBar() {
       setJustClosed(null);
       setSession(await sessionsApi.start());
       await refresh();
+      onChanged?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not start the session");
     } finally {
@@ -70,6 +70,7 @@ export default function SessionBar() {
       setActivity(null);
       setNotes("");
       setClosing(false);
+      onChanged?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not close the session");
     } finally {
@@ -78,8 +79,8 @@ export default function SessionBar() {
   };
 
   return (
-    <div className="border-b border-neutral-200 bg-neutral-50">
-      <div className="max-w-7xl mx-auto px-8 py-2 flex flex-wrap items-center gap-3 text-xs">
+    <div className="bg-white border border-neutral-200 rounded-lg shadow-sm">
+      <div className="px-4 py-2.5 flex flex-wrap items-center gap-3 text-xs">
         {session ? (
           <>
             <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-800">
@@ -124,7 +125,7 @@ export default function SessionBar() {
             <span className="inline-flex items-center gap-1.5 text-emerald-800 font-semibold">
               <FiCheckCircle /> {justClosed.name} closed
             </span>
-            <a href={`/batches`} className="text-neutral-600 underline underline-offset-2 hover:text-neutral-900">
+            <a href={`/dashboard/${justClosed.id}`} className="text-neutral-600 underline underline-offset-2 hover:text-neutral-900">
               Open its report to review and email it
             </a>
             <button type="button" onClick={() => void start()} disabled={busy}

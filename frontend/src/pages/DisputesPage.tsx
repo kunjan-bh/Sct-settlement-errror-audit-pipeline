@@ -3,6 +3,7 @@ import {
   FiAlertTriangle, FiChevronDown, FiChevronRight, FiDatabase, FiLock,
   FiRefreshCw, FiSearch, FiDownload,
 } from "react-icons/fi";
+import SessionBar from "../components/SessionBar";
 import {
   disputesApi, type CoreDbStatus, type Dispute, type DisputeOpStatus,
   type DisputeResponse, type DisputeScopeType,
@@ -408,6 +409,10 @@ export default function DisputesPage() {
           </div>
         )}
       </header>
+
+      {/* The session is the batch. It sits directly above the list it records
+          so starting one, working, and closing one are the same motion. */}
+      <SessionBar onChanged={() => void load()} />
 
       <div className="flex flex-wrap items-end gap-3 bg-white border border-neutral-200 rounded-lg px-4 py-3 shadow-sm">
         <label className="text-xs text-neutral-600">
