@@ -29,7 +29,7 @@ function isoDaysAgo(days: number) {
   return d.toISOString().slice(0, 10);
 }
 
-type Filter = "held" | "risk" | "reprocessed" | "all";
+type Filter = "held" | "risk" | "reprocessed" | "settled" | "all";
 
 const OP_ACTIONS: { key: DisputeOpStatus; label: string; on: string }[] = [
   { key: "in_progress", label: "In Progress", on: "bg-blue-600 border-blue-600 text-white" },
@@ -133,6 +133,19 @@ function OpsBar({
         </div>
       )}
 
+      {d.likely_settled && (
+        <p className="text-[11px] text-neutral-700 bg-neutral-100 border border-neutral-200 rounded px-2.5 py-1.5">
+          This merchant holds {money(d.hold_balance)}, which their more recent failures
+          already account for — so this older one most likely settled. Inferred from the
+          balance, not stated by the switch; check before writing it off.
+        </p>
+      )}
+      {d.settled_clear && (
+        <p className="text-[11px] text-neutral-700 bg-neutral-100 border border-neutral-200 rounded px-2.5 py-1.5">
+          Hold and total balance are both zero — nothing is sitting on this merchant,
+          so their settlements went through.
+        </p>
+      )}
       {d.reprocessed_ok && (
         <p className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-2.5 py-1.5">
           The same merchant and amount settled successfully at{" "}
@@ -340,7 +353,9 @@ export default function DisputesPage() {
 
   const rows = useMemo(() => {
     const all = data?.disputes ?? [];
-    const live = all.filter((d) => d.op_status !== "exclude" && !d.reprocessed_ok);
+    const live = all.filter(
+      (d) => d.op_status !== "exclude" && !d.reprocessed_ok && !d.likely_settled
+    );
     const base =
       filter === "held" ? live.filter((d) => d.held || d.partially_held)
         : filter === "risk" ? live.filter((d) => d.double_pay_risk)
@@ -525,7 +540,7 @@ export default function DisputesPage() {
       {t && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           <Kpi label="Money held" value={shortMoney(t.held_amount)}
-            sub={`${t.held_merchants} merchant${t.held_merchants === 1 ? "" : "s"}`} tone="amber" />
+            sub={`${t.held_merchants} merchant${t.held_merchants === 1 ? "" : "s"} — what the holds cover`} tone="amber" />
           <Kpi label="Disputes" value={t.held_count.toLocaleString()}
             sub={`${t.open_count} open · ${t.solved_count} solved`} tone="amber" />
           <Kpi label="Double-pay risk" value={t.at_risk_count.toLocaleString()}
@@ -540,6 +555,7 @@ export default function DisputesPage() {
           ["held", `Disputes${t ? ` (${t.held_count})` : ""}`],
           ["risk", `Double-pay risk${t ? ` (${t.at_risk_count})` : ""}`],
           ["reprocessed", `Already reprocessed${t ? ` (${t.reprocessed_count})` : ""}`],
+          ["settled", `Covered by balance${t ? ` (${t.likely_settled_count})` : ""}`],
           ["all", `All failures${t ? ` (${t.failed})` : ""}`],
         ] as [Filter, string][]).map(([key, label]) => (
           <button key={key} type="button" onClick={() => setFilter(key)}
@@ -561,6 +577,8 @@ export default function DisputesPage() {
             ? "No failed settlement in this range has money still held on the merchant."
             : filter === "reprocessed"
               ? "Nothing in this range settled successfully on a later attempt."
+              : filter === "settled"
+                ? "No failure was ruled out by the merchant's balance."
               : "Nothing matches."}
         </p>
       )}
@@ -609,7 +627,7 @@ export default function DisputesPage() {
                       ? "text-emerald-800 bg-emerald-50 border-emerald-200"
                       : "text-neutral-700 bg-neutral-100 border-neutral-200"
                   }`}>
-                    {d.held ? "held" : "part-held"} {shortMoney(d.hold_balance)}
+                    {d.held ? `held ${shortMoney(d.amount)}` : `part-held ${shortMoney(d.covered_amount ?? 0)}`}
                   </span>
                 )}
               </button>

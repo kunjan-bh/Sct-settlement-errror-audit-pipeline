@@ -694,6 +694,15 @@ export interface Dispute {
   hold_balance: number;
   held: boolean;
   partially_held: boolean;
+  /** How much of this settlement the merchant's hold actually covers, when it
+   *  does not cover all of it. */
+  covered_amount?: number;
+  /** The merchant holds money, but it ran out before reaching this (older)
+   *  failure — so this one most likely already settled. */
+  likely_settled: boolean;
+  /** Hold and total balance are both zero: nothing is sitting anywhere, so
+   *  every settlement for this merchant went through. */
+  settled_clear: boolean;
   double_pay_risk: boolean;
   reprocessed_ok: boolean;
   reprocessed_at: string;
@@ -726,6 +735,7 @@ export interface DisputeTotals {
   at_risk_count: number;
   at_risk_amount: number;
   excluded_count: number;
+  likely_settled_count: number;
   reprocessed_count: number;
   solved_count: number;
   in_progress_count: number;

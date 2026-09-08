@@ -166,6 +166,62 @@ def _decision_for(row: dict, decisions: dict, scoped: dict) -> dict:
     return {"op_status": "pending", "op_comment": None, "op_scope": None, "op_updated_at": None}
 
 
+def _allocate_holds(disputes: list[dict]) -> None:
+    """
+    Decide, per merchant, which of their failures the held money actually
+    covers -- setting `held`, `partially_held` and `likely_settled` in place.
+
+    The hold balance is one pot per merchant, not one per failure. A merchant
+    with two failed settlements of NPR 1,000 who holds NPR 1,000 has one
+    outstanding failure and one that already went through; checking each row
+    against the balance on its own calls both of them held and doubles the
+    money at risk.
+
+    Allocation runs most recent first. An older failure has had longer to be
+    retried, swept up by a system-default run or settled on call, so when the
+    hold only stretches to some of them it is the newer ones that are still
+    outstanding. Whatever the hold does not reach is marked `likely_settled`
+    and drops out of the dispute list.
+
+    This is an inference, not a fact the switch states: nothing links a hold
+    to the settlement that caused it. It is why the flag is named "likely" and
+    why these rows stay in the payload rather than being deleted.
+    """
+    by_mid: dict[str, list[dict]] = {}
+    for d in disputes:
+        by_mid.setdefault(d["mid"], []).append(d)
+
+    for rows in by_mid.values():
+        # Excluded rows do not consume the hold -- they are not being chased.
+        live = [d for d in rows if d["op_status"] != "exclude" and not d["reprocessed_ok"]]
+        for d in rows:
+            d.setdefault("held", False)
+            d.setdefault("partially_held", False)
+            d.setdefault("likely_settled", False)
+
+        pot = live[0]["hold_balance"] if live else 0.0
+        # A merchant holding nothing was never a dispute -- those rows are not
+        # "settled by allocation", they simply have no money sitting anywhere.
+        # Only a hold that runs out part-way through tells us something.
+        if pot <= 0:
+            continue
+
+        remaining = pot
+        for d in sorted(live, key=lambda x: x["date_time"], reverse=True):
+            if remaining <= 0:
+                d["likely_settled"] = True
+                continue
+            if remaining >= d["amount"]:
+                d["held"] = True
+                remaining -= d["amount"]
+            else:
+                # The pot covers part of this one: still outstanding, but the
+                # merchant is not holding all of it.
+                d["partially_held"] = True
+                d["covered_amount"] = round(remaining, 2)
+                remaining = 0.0
+
+
 def build_disputes(date_from: str | date, date_to: str | date) -> dict:
     """
     Failed settlements for a date range, split by whether the money is held.
@@ -210,15 +266,15 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
         mid = (r.get("merchant_code") or "").strip()
         amount = _num(r.get("amount"))
         hold = _num(r.get("hold_balance"))
+        total = _num(r.get("total_balance"))
         remark_blob = f"{r.get('remarks') or ''} {r.get('remark_two') or ''}".lower()
         double_pay_risk = any(h in remark_blob for h in hints)
 
-        # "Held" means the merchant is currently holding at least this much.
-        # A merchant with several failures shows the same hold against each --
-        # that is honest: the balance is one pot, not one per failure, and
-        # claiming otherwise would double-count the money at risk.
-        held = hold > 0 and hold >= amount
-        partially_held = hold > 0 and not held
+        # Balance state, decided per merchant below. A merchant holding
+        # nothing at all (hold and total both zero) has no money sitting
+        # anywhere, so every settlement of theirs went through -- that is the
+        # secondary confirmation that a failure is not a live dispute.
+        settled_clear = hold == 0 and total == 0
 
         mapped_partner, partner_type = resolver.resolve(mid)
         # _decision_for reads this off the raw row, so stamp it there too.
@@ -260,29 +316,38 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "member_code": r.get("member_code"),
             "total_balance": _num(r.get("total_balance")),
             "hold_balance": hold,
-            "held": held,
-            "partially_held": partially_held,
+            "settled_clear": settled_clear,
             "double_pay_risk": double_pay_risk,
             "reprocessed_ok": bool(r.get("reprocessed_ok")),
             "reprocessed_at": str(r.get("reprocessed_at") or ""),
             **_decision_for(r, decisions, scoped),
         })
 
+    _allocate_holds(disputes)
+
     # Excluded and already-reprocessed settlements are not outstanding work:
     # one was judged not ours to chase, the other already went through. Both
     # are still returned and counted separately so nothing vanishes silently.
     excluded = [d for d in disputes if d["op_status"] == "exclude"]
     reprocessed = [d for d in disputes if d["reprocessed_ok"] and d["op_status"] != "exclude"]
-    live = [d for d in disputes if d["op_status"] != "exclude" and not d["reprocessed_ok"]]
+    live = [
+        d for d in disputes
+        if d["op_status"] != "exclude" and not d["reprocessed_ok"] and not d.get("likely_settled")
+    ]
 
     held_rows = [d for d in live if d["held"] or d["partially_held"]]
     at_risk = [d for d in held_rows if d["double_pay_risk"]]
     solved = [d for d in held_rows if d["op_status"] == "solved"]
     in_progress = [d for d in held_rows if d["op_status"] == "in_progress"]
 
-    # Money at risk is summed over distinct merchants, not over rows: one pot
-    # per merchant, however many failures point at it.
-    held_by_mid = {d["mid"]: d["hold_balance"] for d in held_rows}
+    # Money at risk is what the hold actually covers, summed over the
+    # settlements being chased -- not the raw hold balance, which can exceed
+    # the failures it is standing against (a merchant holding 120 against a
+    # single failed 100 is 100 in dispute, not 120).
+    held_by_mid = {
+        d["mid"]: d["hold_balance"] for d in held_rows
+    }  # kept for the merchant count only
+    likely_settled = [d for d in disputes if d.get("likely_settled") and d["op_status"] != "exclude"]
 
     by_partner: dict[str, dict] = {}
     for d in disputes:
@@ -306,10 +371,14 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "failed_amount": round(sum(d["amount"] for d in counted), 2),
             "held_count": len(held_rows),
             "held_merchants": len(held_by_mid),
-            "held_amount": round(sum(held_by_mid.values()), 2),
+            "held_amount": round(sum(
+                d["amount"] if d["held"] else d.get("covered_amount", 0.0)
+                for d in held_rows
+            ), 2),
             "at_risk_count": len(at_risk),
             "at_risk_amount": round(sum(d["amount"] for d in at_risk), 2),
             "excluded_count": len(excluded),
+            "likely_settled_count": len(likely_settled),
             "reprocessed_count": len(reprocessed),
             "solved_count": len(solved),
             "in_progress_count": len(in_progress),
