@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FiVolume2, FiVolumeX, FiX } from "react-icons/fi";
+import { FiChevronDown, FiVolume2, FiVolumeX, FiX } from "react-icons/fi";
 import { disputesApi, type Dispute } from "../lib/api";
 
 /**
@@ -24,7 +24,8 @@ import { disputesApi, type Dispute } from "../lib/api";
  */
 
 const STORAGE_KEY = "disputes.voiceAlerts";
-const PRIMED = "Yo boi, alerts on.";
+const VOICE_KEY = "disputes.voiceName";
+const PRIMED = "Yo man, alerts are on.";
 
 // Voices the platform labels female, most natural first. The API does not
 // expose gender, so the only way to choose one is by name -- Zira ships with
@@ -43,6 +44,19 @@ function pickVoice(): SpeechSynthesisVoice | null {
   const synth = window.speechSynthesis;
   if (!synth) return null;
   const voices = synth.getVoices();
+
+  // An explicit choice wins: accent is a matter of which voice is installed,
+  // and no heuristic can guess which one someone wants to hear all day.
+  try {
+    const saved = localStorage.getItem(VOICE_KEY);
+    if (saved) {
+      const hit = voices.find((v) => v.name === saved);
+      if (hit) return hit;
+    }
+  } catch {
+    /* storage unavailable; fall through to the default preference */
+  }
+
   // getVoices() is empty until the engine has loaded; the voiceschanged
   // listener below re-runs this once it has.
   if (!voices.length) return null;
@@ -181,8 +195,8 @@ export default function DisputeWatcher({
     // whoever hears it is going to look at the screen anyway.
     const spoken =
       fresh.length === 1
-        ? "Yo boi, new dispute."
-        : `Yo boi, ${fresh.length} new disputes.`;
+        ? "Yo man, got a new dispute."
+        : `Yo man, got ${fresh.length} new disputes.`;
 
     // Written: the detail, because the toast is read rather than heard.
     const written =
@@ -228,6 +242,32 @@ export default function DisputeWatcher({
 
   const supported = typeof window !== "undefined" && "speechSynthesis" in window;
 
+  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
+  const [voiceName, setVoiceName] = useState<string>("");
+
+  useEffect(() => {
+    if (!supported) return;
+    const read = () => {
+      setVoices(window.speechSynthesis.getVoices());
+      setVoiceName(chosenVoice?.name ?? "");
+    };
+    read();
+    window.speechSynthesis.addEventListener("voiceschanged", read);
+    return () => window.speechSynthesis.removeEventListener("voiceschanged", read);
+  }, [supported]);
+
+  const chooseVoice = (name: string) => {
+    try {
+      localStorage.setItem(VOICE_KEY, name);
+    } catch {
+      /* choice just will not persist */
+    }
+    chosenVoice = window.speechSynthesis.getVoices().find((v) => v.name === name) ?? null;
+    setVoiceName(name);
+    // Say it in the new voice so the choice is audible, not a guess from a name.
+    speak(PRIMED);
+  };
+
   const button = (
     <button
       type="button"
@@ -255,7 +295,42 @@ export default function DisputeWatcher({
   if (compact) {
     return (
       <>
-        {button}
+        <div className="flex items-center">
+          {button}
+          {enabled && voices.length > 1 && (
+            <details className="relative">
+              <summary
+                className="list-none cursor-pointer select-none px-1 py-2 text-neutral-400 hover:text-neutral-700"
+                title="Choose the voice and accent"
+              >
+                <FiChevronDown className="text-[10px]" />
+              </summary>
+              <div className="absolute right-0 z-30 mt-2 w-64 max-h-72 overflow-y-auto bg-white border border-neutral-200 rounded-lg shadow-lg p-1.5">
+                <p className="text-[11px] text-neutral-400 px-2 py-1 leading-snug">
+                  Accent depends on which voices Windows has. Add more under
+                  Settings → Time &amp; Language → Speech.
+                </p>
+                {voices.map((v) => (
+                  <button
+                    key={v.name}
+                    type="button"
+                    onClick={() => chooseVoice(v.name)}
+                    className={`w-full text-left px-2 py-1.5 rounded text-xs cursor-pointer ${
+                      v.name === voiceName
+                        ? "bg-neutral-900 text-white"
+                        : "text-neutral-700 hover:bg-neutral-100"
+                    }`}
+                  >
+                    {v.name}
+                    <span className={`ml-1 ${v.name === voiceName ? "text-neutral-300" : "text-neutral-400"}`}>
+                      {v.lang}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </details>
+          )}
+        </div>
         {lastAlert && alertAt > 0 && (
           <div
             role="status"
