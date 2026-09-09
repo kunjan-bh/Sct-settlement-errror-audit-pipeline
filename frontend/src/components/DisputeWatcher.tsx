@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FiVolume2, FiVolumeX } from "react-icons/fi";
+import { FiVolume2, FiVolumeX, FiX } from "react-icons/fi";
 import { disputesApi, type Dispute } from "../lib/api";
 
 /**
@@ -63,6 +63,7 @@ export default function DisputeWatcher({
   const [enabled, setEnabled] = useState(false);
   const [lastCheck, setLastCheck] = useState<Date | null>(null);
   const [lastAlert, setLastAlert] = useState<string | null>(null);
+  const [alertAt, setAlertAt] = useState<number>(0);
   const [checking, setChecking] = useState(false);
 
   // What we have already seen. A ref, not state: changing it must not re-render
@@ -134,6 +135,7 @@ export default function DisputeWatcher({
       : "";
 
     setLastAlert(`${line}${warn}`);
+    setAlertAt(Date.now());
     if (enabledRef.current) speak(line + warn);
   }, [disputes]);
 
@@ -143,6 +145,12 @@ export default function DisputeWatcher({
     const t = setInterval(() => void check(), ms);
     return () => clearInterval(t);
   }, [check, intervalMinutes]);
+
+  useEffect(() => {
+    if (!alertAt) return;
+    const t = setTimeout(() => setAlertAt(0), 45_000);
+    return () => clearTimeout(t);
+  }, [alertAt]);
 
   const toggle = () => {
     const next = !enabled;
@@ -171,33 +179,42 @@ export default function DisputeWatcher({
             : `Say new disputes out loud when they arrive. Checking every ${intervalMinutes} min.`
           : "This browser cannot speak"
       }
-      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-semibold transition-colors disabled:opacity-40 cursor-pointer ${
+      className={`inline-flex items-center gap-1.5 ${compact ? "p-2" : "px-2.5 py-1"} rounded border text-[11px] font-semibold transition-colors disabled:opacity-40 cursor-pointer shrink-0 ${
         enabled
           ? "border-emerald-300 bg-emerald-50 text-emerald-800"
           : "border-neutral-300 text-neutral-600 hover:border-neutral-400"
       }`}
     >
       {enabled ? <FiVolume2 /> : <FiVolumeX />}
-      {compact ? (enabled ? "Alerts on" : "Alerts off") : enabled ? "Voice alerts on" : "Voice alerts off"}
+      {!compact && (enabled ? "Voice alerts on" : "Voice alerts off")}
       {checking && <span className="w-1 h-1 rounded-full bg-current animate-pulse" />}
     </button>
   );
 
   if (compact) {
-    // In the nav bar there is room for the control and nothing else; the full
-    // wording lives in the tooltip and on the disputes page itself.
     return (
-      <div className="flex items-center gap-2">
+      <>
         {button}
-        {lastAlert && (
-          <span
-            className="hidden lg:inline text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-0.5 max-w-xs truncate"
-            title={lastAlert}
+        {lastAlert && alertAt > 0 && (
+          <div
+            role="status"
+            className="fixed bottom-5 right-5 z-50 max-w-sm rounded-lg border border-amber-300 bg-amber-50 shadow-lg px-4 py-3 text-xs text-amber-900"
           >
-            {lastAlert}
-          </span>
+            <div className="flex items-start gap-3">
+              <FiVolume2 className="mt-0.5 shrink-0 text-amber-700" />
+              <p className="leading-relaxed">{lastAlert}</p>
+              <button
+                type="button"
+                onClick={() => setAlertAt(0)}
+                aria-label="Dismiss"
+                className="ml-auto -mt-1 -mr-1 p-1 text-amber-700 hover:text-amber-900 cursor-pointer"
+              >
+                <FiX />
+              </button>
+            </div>
+          </div>
         )}
-      </div>
+      </>
     );
   }
 

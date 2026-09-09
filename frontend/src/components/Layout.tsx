@@ -46,8 +46,8 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-neutral-50">
       <nav className="border-b border-neutral-200 bg-white sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-8 h-14 flex items-center gap-1">
-          <span className="font-semibold text-neutral-900 mr-6">SmartQR Ops</span>
+        <div className="max-w-7xl mx-auto px-8 h-14 flex items-center gap-1">
+          <span className="font-semibold text-neutral-900 mr-6 whitespace-nowrap">SmartQR Ops</span>
 
           {/* Hover dropdown: submenu sits directly below with padding (not
               margin) so the gap is still part of the hoverable area -- a
@@ -67,7 +67,7 @@ export default function Layout() {
           <div className="group/menu relative">
             <button
               type="button"
-              className={`group relative px-3 py-1.5 rounded-md text-sm font-medium transition-colors duration-150 inline-flex items-center gap-1.5 cursor-pointer ${
+              className={`group relative px-3 py-1.5 rounded-md text-sm font-medium whitespace-nowrap transition-colors duration-150 inline-flex items-center gap-1.5 cursor-pointer ${
                 isInSection ? "bg-neutral-900 text-white" : "text-neutral-500 hover:text-neutral-900"
               }`}
             >
@@ -87,7 +87,7 @@ export default function Layout() {
                     key={item.to}
                     to={item.to}
                     className={({ isActive }) =>
-                      `group relative px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                      `group relative px-3 py-1.5 rounded-md text-sm font-medium whitespace-nowrap transition-colors ${
                         isActive
                           ? "bg-neutral-900 text-white"
                           : "text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900"
@@ -107,7 +107,7 @@ export default function Layout() {
               key={item.to}
               to={item.to}
               className={({ isActive }) =>
-                `group relative px-3 py-1.5 rounded-md text-sm font-medium transition-colors duration-150 ${
+                `group relative px-3 py-1.5 rounded-md text-sm font-medium whitespace-nowrap transition-colors duration-150 ${
                   isActive ? "bg-neutral-900 text-white" : "text-neutral-500 hover:text-neutral-900"
                 }`
               }
