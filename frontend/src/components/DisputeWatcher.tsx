@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FiVolume2, FiVolumeX } from "react-icons/fi";
-import type { Dispute } from "../lib/api";
+import { disputesApi, type Dispute } from "../lib/api";
 
 /**
  * Watches the switch for disputes that were not there a moment ago, and says
@@ -14,6 +14,13 @@ import type { Dispute } from "../lib/api";
  * speech until the page has had a real click, so a switch that silently did
  * nothing on first load would be worse than no switch. The click that turns it
  * on is the gesture that unlocks it.
+ *
+ * Lives in the layout and fetches for itself, so it keeps watching while the
+ * operator is on Partner Mapping or anywhere else. Mounted inside the disputes
+ * page it was unmounted the moment they navigated away: the timer stopped, the
+ * record of what it had already seen was thrown away, and coming back re-seeded
+ * from scratch -- so anything that arrived while they were gone was never
+ * announced, which is exactly when an alert is worth having.
  */
 
 const STORAGE_KEY = "disputes.voiceAlerts";
@@ -32,18 +39,27 @@ function speak(text: string) {
   synth.speak(u);
 }
 
+function todayWindow(): { from: string; to: string } {
+  // Recomputed per check rather than fixed at mount, so a session left open
+  // overnight starts watching the new day instead of yesterday's.
+  const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const now = new Date();
+  const yesterday = new Date(now);
+  yesterday.setDate(now.getDate() - 1);
+  return { from: iso(yesterday), to: iso(now) };
+}
+
 export interface WatcherProps {
-  /** Every dispute currently on the page, already filtered to what counts. */
-  disputes: Dispute[];
-  /** Refetch from the switch. Must not disturb what the operator is doing. */
-  onRefresh: () => Promise<void>;
   /** Minutes between checks. */
   intervalMinutes?: number;
+  /** Compact rendering for the nav bar. */
+  compact?: boolean;
 }
 
 export default function DisputeWatcher({
-  disputes, onRefresh, intervalMinutes = 10,
+  intervalMinutes = 10, compact = false,
 }: WatcherProps) {
+  const [disputes, setDisputes] = useState<Dispute[]>([]);
   const [enabled, setEnabled] = useState(false);
   const [lastCheck, setLastCheck] = useState<Date | null>(null);
   const [lastAlert, setLastAlert] = useState<string | null>(null);
@@ -74,12 +90,27 @@ export default function DisputeWatcher({
   const check = useCallback(async () => {
     setChecking(true);
     try {
-      await onRefresh();
+      const { from, to } = todayWindow();
+      const data = await disputesApi.list(from, to);
+      // Only what is still open counts as news: a settlement that arrives
+      // already reprocessed, or that someone has actioned, is not.
+      setDisputes(
+        data.disputes.filter(
+          (d) =>
+            d.op_status === "pending" &&
+            !d.reprocessed_ok &&
+            !d.likely_settled &&
+            !(d.settled_clear && !d.negative_hold)
+        )
+      );
       setLastCheck(new Date());
+    } catch {
+      /* a failed background check is not worth interrupting anyone over --
+         the next one in ten minutes will try again */
     } finally {
       setChecking(false);
     }
-  }, [onRefresh]);
+  }, []);
 
   // Announce anything in the new data that was not in the old.
   useEffect(() => {
@@ -107,6 +138,7 @@ export default function DisputeWatcher({
   }, [disputes]);
 
   useEffect(() => {
+    void check();  // seed immediately, so the first alert is one interval away
     const ms = Math.max(1, intervalMinutes) * 60_000;
     const t = setInterval(() => void check(), ms);
     return () => clearInterval(t);
@@ -127,28 +159,51 @@ export default function DisputeWatcher({
 
   const supported = typeof window !== "undefined" && "speechSynthesis" in window;
 
+  const button = (
+    <button
+      type="button"
+      onClick={toggle}
+      disabled={!supported}
+      title={
+        supported
+          ? enabled
+            ? `Announcing new disputes out loud. Checking every ${intervalMinutes} min. Click to silence.`
+            : `Say new disputes out loud when they arrive. Checking every ${intervalMinutes} min.`
+          : "This browser cannot speak"
+      }
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] font-semibold transition-colors disabled:opacity-40 cursor-pointer ${
+        enabled
+          ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+          : "border-neutral-300 text-neutral-600 hover:border-neutral-400"
+      }`}
+    >
+      {enabled ? <FiVolume2 /> : <FiVolumeX />}
+      {compact ? (enabled ? "Alerts on" : "Alerts off") : enabled ? "Voice alerts on" : "Voice alerts off"}
+      {checking && <span className="w-1 h-1 rounded-full bg-current animate-pulse" />}
+    </button>
+  );
+
+  if (compact) {
+    // In the nav bar there is room for the control and nothing else; the full
+    // wording lives in the tooltip and on the disputes page itself.
+    return (
+      <div className="flex items-center gap-2">
+        {button}
+        {lastAlert && (
+          <span
+            className="hidden lg:inline text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-0.5 max-w-xs truncate"
+            title={lastAlert}
+          >
+            {lastAlert}
+          </span>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-wrap items-center gap-3 text-[11px] text-neutral-500">
-      <button
-        type="button"
-        onClick={toggle}
-        disabled={!supported}
-        title={
-          supported
-            ? enabled
-              ? "Announcing new disputes out loud. Click to silence."
-              : "Say new disputes out loud when they arrive"
-            : "This browser cannot speak"
-        }
-        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded border font-semibold transition-colors disabled:opacity-40 cursor-pointer ${
-          enabled
-            ? "border-emerald-300 bg-emerald-50 text-emerald-800"
-            : "border-neutral-300 text-neutral-600 hover:border-neutral-400"
-        }`}
-      >
-        {enabled ? <FiVolume2 /> : <FiVolumeX />}
-        {enabled ? "Voice alerts on" : "Voice alerts off"}
-      </button>
+      {button}
 
       <span>
         Checking the switch every {intervalMinutes} min

@@ -3,8 +3,8 @@ import {
   FiAlertTriangle, FiChevronDown, FiChevronRight, FiDatabase, FiLock,
   FiRefreshCw, FiSearch, FiDownload,
 } from "react-icons/fi";
-import DisputeWatcher from "../components/DisputeWatcher";
 import SessionBar from "../components/SessionBar";
+import { cacheGet, cacheSet } from "../lib/cache";
 import {
   disputesApi, type CoreDbStatus, type Dispute, type DisputeOpStatus,
   type DisputeResponse, type DisputeScopeType,
@@ -320,40 +320,34 @@ export default function DisputesPage() {
   useEffect(() => { void loadScopes(); }, [loadScopes]);
 
   const load = useCallback(async () => {
-    setLoading(true);
+    // Reading the switch takes ~10s. Showing the last result for this range
+    // straight away, and refreshing behind it, means coming back from another
+    // page is instant instead of a blank wait -- while the figures still end
+    // up live rather than stale.
+    const key = `disputes:${from}:${to}`;
+    const cached = cacheGet<DisputeResponse>(key);
+    if (cached) setData(cached);
+
+    setLoading(!cached);
     setError(null);
     try {
-      setData(await disputesApi.list(from, to));
-      setOpen(new Set());
+      const fresh = await disputesApi.list(from, to);
+      setData(fresh);
+      cacheSet(key, fresh);
+      if (!cached) setOpen(new Set());
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to load disputes");
-      setData(null);
+      // A cached view is better than an error page; only complain if there is
+      // nothing to show.
+      if (!cached) {
+        setError(e instanceof Error ? e.message : "Failed to load disputes");
+        setData(null);
+      }
     } finally {
       setLoading(false);
     }
   }, [from, to]);
 
   useEffect(() => { void load(); }, [load]);
-
-  // Background refresh for the watcher. Deliberately not `load`: that clears
-  // the expanded rows and raises the loading state, so a check landing while
-  // someone is reading a dispute would close it under them.
-  const quietRefresh = useCallback(async () => {
-    try {
-      setData(await disputesApi.list(from, to));
-      setError(null);
-    } catch {
-      /* a failed background check is not worth interrupting anyone over --
-         the next one in ten minutes will try again */
-    }
-  }, [from, to]);
-
-  // What counts as "a new dispute": still open, and actually on the page.
-  // A settlement that arrives already reprocessed is not news.
-  const openDisputes = useMemo(
-    () => (data?.disputes ?? []).filter((d) => isListed(d) && d.op_status === "pending"),
-    [data]
-  );
 
   // Record a decision, then patch just that row in place. Re-fetching would
   // re-read the switch (~19s for a two-day range) and collapse the row the
@@ -379,6 +373,7 @@ export default function DisputesPage() {
         const outstanding = counted.filter(
           (x) => x.op_status === "pending" || x.op_status === "in_progress"
         );
+        cacheSet(`disputes:${from}:${to}`, { ...prev, disputes });
         return {
           ...prev,
           disputes,
@@ -688,8 +683,6 @@ export default function DisputesPage() {
           </button>
         ))}
       </div>
-
-      <DisputeWatcher disputes={openDisputes} onRefresh={quietRefresh} intervalMinutes={10} />
 
       {t && !!(t.reprocessed_count + t.likely_settled_count + t.settled_clear_count + t.excluded_count) && (
         <p className="text-[11px] text-neutral-400 -mt-2">

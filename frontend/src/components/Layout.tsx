@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { FiChevronDown, FiSettings } from "react-icons/fi";
+import DisputeWatcher from "./DisputeWatcher";
 
 // Batch-scoped workflow, grouped under one "Settlement Error" hover menu.
 const settlementItems = [
@@ -116,12 +117,18 @@ export default function Layout() {
             </NavLink>
           ))}
 
+          {/* Mounted here rather than on the disputes page so it keeps
+              watching wherever the operator navigates. */}
+          <div className="ml-auto flex items-center">
+            <DisputeWatcher compact intervalMinutes={10} />
+          </div>
+
           <NavLink
             to={SETTINGS_ITEM.to}
             title={SETTINGS_ITEM.label}
             aria-label={SETTINGS_ITEM.label}
             className={({ isActive }) =>
-              `group relative ml-auto p-2 rounded-md transition-colors duration-150 ${
+              `group relative ml-2 p-2 rounded-md transition-colors duration-150 ${
                 isActive
                   ? "bg-neutral-900 text-white"
                   : "text-neutral-400 hover:text-neutral-900 hover:bg-neutral-100"
