@@ -24,7 +24,7 @@ import { disputesApi, type Dispute } from "../lib/api";
  */
 
 const STORAGE_KEY = "disputes.voiceAlerts";
-const PRIMED = "Dispute alerts on.";
+const PRIMED = "Yo boi, alerts on.";
 
 // Voices the platform labels female, most natural first. The API does not
 // expose gender, so the only way to choose one is by name -- Zira ships with
@@ -175,19 +175,29 @@ export default function DisputeWatcher({
 
     const total = fresh.reduce((s, d) => s + d.amount, 0);
     const risky = fresh.filter((d) => d.double_pay_risk).length;
-    const line =
+
+    // Spoken: the count and nothing else. It is heard once, often from across
+    // the room, and amounts read aloud are neither memorable nor actionable --
+    // whoever hears it is going to look at the screen anyway.
+    const spoken =
       fresh.length === 1
-        ? `New dispute incoming. ${fresh[0].mapped_partner}, ` +
+        ? "Yo boi, new dispute."
+        : `Yo boi, ${fresh.length} new disputes.`;
+
+    // Written: the detail, because the toast is read rather than heard.
+    const written =
+      fresh.length === 1
+        ? `New dispute — ${fresh[0].mapped_partner}, ` +
           `${Math.round(fresh[0].amount).toLocaleString("en-NP")} rupees.`
-        : `${fresh.length} new disputes incoming, ` +
-          `totalling ${Math.round(total).toLocaleString("en-NP")} rupees.`;
+        : `${fresh.length} new disputes — ` +
+          `${Math.round(total).toLocaleString("en-NP")} rupees in total.`;
     const warn = risky
       ? ` ${risky === 1 ? "One needs" : `${risky} need`} verification before retry.`
       : "";
 
-    setLastAlert(`${line}${warn}`);
+    setLastAlert(`${written}${warn}`);
     setAlertAt(Date.now());
-    if (enabledRef.current) speak(line + warn);
+    if (enabledRef.current) speak(spoken);
   }, [disputes]);
 
   useEffect(() => {
