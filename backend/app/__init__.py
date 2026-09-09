@@ -48,4 +48,7 @@ def create_app(config_class=Config):
     from app.routes.sessions import sessions_bp
     app.register_blueprint(sessions_bp)
 
+    from app.routes.reconcile import reconcile_bp
+    app.register_blueprint(reconcile_bp)
+
     return app
