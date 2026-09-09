@@ -21,11 +21,15 @@ from app.services.classification_service import PartnerResolver
 from app.services.core_db import run_query
 from app.services.settings_service import get_settings
 
-# A failed settlement carries the failure reason in two places that disagree:
+# Every status that means the money has not reached the merchant. Named for
+# what they have in common rather than "failed", because IN_PROGRESS is not a
+# failure -- it is a settlement stuck part-way, which is exactly the thing
+# worth chasing when the amount is sitting in the merchant's hold.
+#
 # `status` is the coarse verdict and `current_status` is where in the transfer
 # it stopped. Ops needs the second one -- "FUND_TRANSFER_PENDING" and
 # "VALIDATION_FAILED" are chased completely differently.
-_FAILED_STATUSES = ("FAILED", "PENDING")
+_UNSETTLED_STATUSES = ("FAILED", "PENDING", "IN_PROGRESS")
 
 # Held money plus one of these remarks is the dangerous combination: the far
 # end may well have paid out, so the merchant could be paid twice if this is
@@ -157,7 +161,11 @@ def _reason(row: dict) -> str:
     """
     remark = (row.get("remarks") or "").strip()
     current = (row.get("current_status") or "").strip()
-    if remark and remark.lower() not in ("failed", "-", "n/a", "null"):
+    # Some rows carry a pipe-joined trace (mid|stan|rrn) where the message
+    # should be. That is an identifier, not a reason, and reads as noise in a
+    # list someone is triaging.
+    looks_like_trace = "|" in remark and " " not in remark
+    if remark and not looks_like_trace and remark.lower() not in ("failed", "-", "n/a", "null"):
         return remark
     if current:
         return current.replace("_", " ").title()
@@ -307,7 +315,7 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "date_from": str(date_from),
             "date_to": str(date_to),
             "reprocess_to": reprocess_to,
-            "statuses": list(_FAILED_STATUSES),
+            "statuses": list(_UNSETTLED_STATUSES),
         },
     )
 

@@ -31,7 +31,13 @@ from app.services.dispute_service import _CARRIED_SQL, _reason
 from app.services.status_utils import issue_partner_key, normalize_txn_status
 
 # fund_transfer_logs statuses mapped onto the batch flow's vocabulary.
-_STATUS_MAP = {"FAILED": "Failed", "PENDING": "Pending", "SUCCESS": "Success"}
+# "In Progress" is what normalize_txn_status turns into the batch flow's
+# lo_progress bucket, which is where a settlement stuck at status code LO
+# belongs.
+_STATUS_MAP = {
+    "FAILED": "Failed", "PENDING": "Pending",
+    "IN_PROGRESS": "In Progress", "SUCCESS": "Success",
+}
 
 # The whole day's settlements, not just the ones someone touched. An upload
 # batch was a settlement export -- every row for the period, with the failures
