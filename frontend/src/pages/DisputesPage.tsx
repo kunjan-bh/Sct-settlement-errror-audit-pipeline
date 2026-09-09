@@ -319,13 +319,18 @@ export default function DisputesPage() {
 
   useEffect(() => { void loadScopes(); }, [loadScopes]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     // Reading the switch takes ~10s. Showing the last result for this range
     // straight away, and refreshing behind it, means coming back from another
     // page is instant instead of a blank wait -- while the figures still end
     // up live rather than stale.
+    //
+    // Pressing Refresh is different: it is a deliberate "is there anything
+    // new". Serving that from cache made the button look broken -- the fetch
+    // ran, but with nothing to show for ten seconds and no spinner, since the
+    // cached copy had already suppressed the loading state.
     const key = `disputes:${from}:${to}`;
-    const cached = cacheGet<DisputeResponse>(key);
+    const cached = force ? undefined : cacheGet<DisputeResponse>(key);
     if (cached) setData(cached);
 
     setLoading(!cached);
@@ -334,13 +339,15 @@ export default function DisputesPage() {
       const fresh = await disputesApi.list(from, to);
       setData(fresh);
       cacheSet(key, fresh);
-      if (!cached) setOpen(new Set());
+      if (!cached && !force) setOpen(new Set());
     } catch (e) {
       // A cached view is better than an error page; only complain if there is
       // nothing to show.
       if (!cached) {
         setError(e instanceof Error ? e.message : "Failed to load disputes");
-        setData(null);
+        // A forced refresh that fails should leave the list alone rather than
+        // blanking a working view.
+        if (!force) setData(null);
       }
     } finally {
       setLoading(false);
@@ -445,7 +452,7 @@ export default function DisputesPage() {
       ]);
       if (excludeDetailsRef.current) excludeDetailsRef.current.open = false;
       await loadScopes();
-      await load();
+      await load(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not apply exclusions");
     } finally {
@@ -557,7 +564,7 @@ export default function DisputesPage() {
           <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
             className="block mt-1 border border-neutral-300 rounded px-2 py-1 text-sm" />
         </label>
-        <button type="button" onClick={() => void load()} disabled={loading}
+        <button type="button" onClick={() => void load(true)} disabled={loading}
           className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-semibold disabled:opacity-50 cursor-pointer">
           <FiRefreshCw className={loading ? "animate-spin" : ""} />
           {loading ? "Reading switch…" : "Refresh"}
