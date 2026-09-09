@@ -26,6 +26,50 @@ import { disputesApi, type Dispute } from "../lib/api";
 const STORAGE_KEY = "disputes.voiceAlerts";
 const PRIMED = "Dispute alerts on.";
 
+// Voices the platform labels female, most natural first. The API does not
+// expose gender, so the only way to choose one is by name -- Zira ships with
+// Windows, Samantha with macOS, and the Google voices appear in Chrome when
+// it is online.
+const FEMALE_VOICES = [
+  "google uk english female", "google us english",
+  "microsoft aria", "microsoft jenny", "microsoft michelle", "microsoft ana",
+  "microsoft zira", "microsoft hazel", "microsoft heera", "microsoft susan",
+  "samantha", "karen", "moira", "tessa", "fiona", "victoria", "serena", "linda",
+];
+
+let chosenVoice: SpeechSynthesisVoice | null = null;
+
+function pickVoice(): SpeechSynthesisVoice | null {
+  const synth = window.speechSynthesis;
+  if (!synth) return null;
+  const voices = synth.getVoices();
+  // getVoices() is empty until the engine has loaded; the voiceschanged
+  // listener below re-runs this once it has.
+  if (!voices.length) return null;
+
+  const byName = (needle: string) =>
+    voices.find((v) => v.name.toLowerCase().includes(needle));
+
+  for (const name of FEMALE_VOICES) {
+    const hit = byName(name);
+    if (hit) return hit;
+  }
+  // Some platforms say so outright rather than using a first name.
+  const labelled = voices.find((v) => /female/i.test(v.name));
+  if (labelled) return labelled;
+
+  // No female voice installed: an English one is still better than whatever
+  // the browser defaults to, which may be in another language entirely.
+  return voices.find((v) => v.lang.toLowerCase().startsWith("en")) ?? null;
+}
+
+if (typeof window !== "undefined" && window.speechSynthesis) {
+  chosenVoice = pickVoice();
+  window.speechSynthesis.addEventListener("voiceschanged", () => {
+    chosenVoice = pickVoice();
+  });
+}
+
 function speak(text: string) {
   const synth = window.speechSynthesis;
   if (!synth) return;
@@ -33,8 +77,15 @@ function speak(text: string) {
   // the newest announcement replaces whatever was still speaking.
   synth.cancel();
   const u = new SpeechSynthesisUtterance(text);
-  u.rate = 0.95;
-  u.pitch = 1;
+  if (!chosenVoice) chosenVoice = pickVoice();
+  if (chosenVoice) {
+    u.voice = chosenVoice;
+    u.lang = chosenVoice.lang;
+  }
+  // Slightly slower and a touch higher than default: these are read once,
+  // across a room, over office noise.
+  u.rate = 0.92;
+  u.pitch = 1.1;
   u.volume = 1;
   synth.speak(u);
 }
