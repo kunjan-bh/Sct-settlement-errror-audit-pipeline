@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FiChevronDown, FiVolume2, FiVolumeX, FiX } from "react-icons/fi";
 import { disputesApi, type Dispute } from "../lib/api";
+import { cacheInvalidate } from "../lib/cache";
+import { localIso, localIsoDaysAgo } from "../lib/localdate";
 
 /**
  * Watches the switch for disputes that were not there a moment ago, and says
@@ -22,6 +24,11 @@ import { disputesApi, type Dispute } from "../lib/api";
  * from scratch -- so anything that arrived while they were gone was never
  * announced, which is exactly when an alert is worth having.
  */
+
+/** Fired when the watcher finds disputes the page has not shown yet. The
+ *  disputes page listens and re-reads: announcing something the operator then
+ *  cannot see on screen is worse than not announcing it. */
+export const NEW_DISPUTES_EVENT = "disputes:new";
 
 const STORAGE_KEY = "disputes.voiceAlerts";
 const VOICE_KEY = "disputes.voiceName";
@@ -107,11 +114,7 @@ function speak(text: string) {
 function todayWindow(): { from: string; to: string } {
   // Recomputed per check rather than fixed at mount, so a session left open
   // overnight starts watching the new day instead of yesterday's.
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
-  const now = new Date();
-  const yesterday = new Date(now);
-  yesterday.setDate(now.getDate() - 1);
-  return { from: iso(yesterday), to: iso(now) };
+  return { from: localIsoDaysAgo(1), to: localIso() };
 }
 
 export interface WatcherProps {
@@ -212,6 +215,15 @@ export default function DisputeWatcher({
     setLastAlert(`${written}${warn}`);
     setAlertAt(Date.now());
     if (enabledRef.current) speak(spoken);
+
+    // The page holds its own cached copy from before these arrived. Drop it
+    // and ask the page to re-read, or the alert describes rows that are not
+    // on screen.
+    const { from, to } = todayWindow();
+    cacheInvalidate(`disputes:${from}:${to}`);
+    window.dispatchEvent(
+      new CustomEvent(NEW_DISPUTES_EVENT, { detail: { count: fresh.length, from, to } })
+    );
   }, [disputes]);
 
   useEffect(() => {

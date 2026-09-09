@@ -3,6 +3,8 @@ import {
   FiAlertTriangle, FiChevronDown, FiChevronRight, FiDatabase, FiLock,
   FiRefreshCw, FiSearch, FiDownload,
 } from "react-icons/fi";
+import { NEW_DISPUTES_EVENT } from "../components/DisputeWatcher";
+import { localIso, localIsoDaysAgo } from "../lib/localdate";
 import SessionBar from "../components/SessionBar";
 import { cacheGet, cacheSet } from "../lib/cache";
 import {
@@ -24,11 +26,7 @@ const money = (n: number) =>
 
 const shortMoney = (n: number) => `NPR ${Math.round(n).toLocaleString("en-NP")}`;
 
-function isoDaysAgo(days: number) {
-  const d = new Date();
-  d.setDate(d.getDate() - days);
-  return d.toISOString().slice(0, 10);
-}
+
 
 type Filter = "open" | "risk" | "in_progress" | "solved" | "excluded";
 
@@ -283,8 +281,8 @@ function DetailGrid({ d }: { d: Dispute }) {
 }
 
 export default function DisputesPage() {
-  const [from, setFrom] = useState(isoDaysAgo(1));
-  const [to, setTo] = useState(isoDaysAgo(0));
+  const [from, setFrom] = useState(localIsoDaysAgo(1));
+  const [to, setTo] = useState(localIso());
   const [data, setData] = useState<DisputeResponse | null>(null);
   const [status, setStatus] = useState<CoreDbStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -355,6 +353,22 @@ export default function DisputesPage() {
   }, [from, to]);
 
   useEffect(() => { void load(); }, [load]);
+
+  // The watcher polls independently in the layout, so without this the alert
+  // fires while the list still shows the data from before -- exactly the
+  // "I heard it but I cannot see it" case.
+  useEffect(() => {
+    const onNew = (e: Event) => {
+      const detail = (e as CustomEvent<{ to?: string }>).detail;
+      // The page pins its range when it mounts; the watcher moves with the
+      // clock. Left alone, a dispute arriving on a day the page is not
+      // showing gets announced and then cannot be found.
+      if (detail?.to && detail.to > to) setTo(detail.to);
+      else void load(true);
+    };
+    window.addEventListener(NEW_DISPUTES_EVENT, onNew);
+    return () => window.removeEventListener(NEW_DISPUTES_EVENT, onNew);
+  }, [load, to]);
 
   // Record a decision, then patch just that row in place. Re-fetching would
   // re-read the switch (~19s for a two-day range) and collapse the row the
