@@ -3,6 +3,7 @@ import {
   FiAlertTriangle, FiChevronDown, FiChevronRight, FiDatabase, FiLock,
   FiRefreshCw, FiSearch, FiDownload,
 } from "react-icons/fi";
+import DisputeWatcher from "../components/DisputeWatcher";
 import SessionBar from "../components/SessionBar";
 import {
   disputesApi, type CoreDbStatus, type Dispute, type DisputeOpStatus,
@@ -326,6 +327,26 @@ export default function DisputesPage() {
 
   useEffect(() => { void load(); }, [load]);
 
+  // Background refresh for the watcher. Deliberately not `load`: that clears
+  // the expanded rows and raises the loading state, so a check landing while
+  // someone is reading a dispute would close it under them.
+  const quietRefresh = useCallback(async () => {
+    try {
+      setData(await disputesApi.list(from, to));
+      setError(null);
+    } catch {
+      /* a failed background check is not worth interrupting anyone over --
+         the next one in ten minutes will try again */
+    }
+  }, [from, to]);
+
+  // What counts as "a new dispute": still open, and actually on the page.
+  // A settlement that arrives already reprocessed is not news.
+  const openDisputes = useMemo(
+    () => (data?.disputes ?? []).filter((d) => isListed(d) && d.op_status === "pending"),
+    [data]
+  );
+
   // Record a decision, then patch just that row in place. Re-fetching would
   // re-read the switch (~19s for a two-day range) and collapse the row the
   // operator is working in, which makes triaging a list unusable.
@@ -550,12 +571,7 @@ export default function DisputesPage() {
           ))}
         </select>
 
-        <div className="relative">
-          <FiSearch className="absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400 text-sm" />
-          <input value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="MID, CRRN, merchant, reason…"
-            className="pl-8 pr-3 py-2 border border-neutral-300 rounded text-sm w-72" />
-        </div>
+
 
         <details
           ref={excludeDetailsRef}
@@ -664,6 +680,8 @@ export default function DisputesPage() {
           </button>
         ))}
       </div>
+
+      <DisputeWatcher disputes={openDisputes} onRefresh={quietRefresh} intervalMinutes={10} />
 
       {t && !!(t.reprocessed_count + t.likely_settled_count + t.settled_clear_count + t.excluded_count) && (
         <p className="text-[11px] text-neutral-400 -mt-2">
