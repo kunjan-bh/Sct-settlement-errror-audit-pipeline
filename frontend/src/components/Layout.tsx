@@ -16,6 +16,7 @@ const topLevelItems = [
   { to: "/settlement-type", label: "Settlement Type Report" },
   { to: "/issuer-acquirer", label: "Issuer & Acquirer" },
   { to: "/disputes", label: "Disputes" },
+  { to: "/reconcile", label: "Reconcile" },
 ];
 
 // Settings sits apart from the rest of the nav: it is app configuration, not

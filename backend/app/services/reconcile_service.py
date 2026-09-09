@@ -56,37 +56,34 @@ def _num(v) -> float:
 
 # One row per incoming payment, with its settlement beside it where there is
 # one. Left join, because a payment with no settlement is the whole point.
-_MATCH_SQL = """
-WITH txn AS (
-    SELECT
-        t.txn_id, t.network_txn_id, t.crrn, t.stan, t.merchant_code,
-        t.txn_amount, t.txn_date, t.txn_date_time, t.txn_mode,
-        t.institution_name, t.issuer_institution_name,
-        t.is_real_time_merchant_settled AS real_time
-    FROM operators.transactions t
-    WHERE t.txn_date BETWEEN %(date_from)s AND %(date_to)s
-      AND t.payment_status = 'SUCCESS'
-),
-st AS (
-    SELECT
-        f.id, f.ref_id, f.merchant_code, f.amount, f.service_charge,
-        f.status, f.current_status, f.status_code, f.remarks,
-        f.date AS settle_date, f.date_time AS settle_date_time,
-        f.settlement_frequency, f.bank_name_or_wallet_name, f.crrn AS settle_crrn
-    FROM operators.fund_transfer_logs f
-    WHERE f.date BETWEEN %(date_from)s AND %(settle_to)s
-      AND f.ref_id IS NOT NULL
-)
+# Both sides are fetched separately and joined in Python.
+#
+# As one server-side join this took 49s on a single day and tipped over the 60s
+# statement timeout the moment anything else was querying -- ref_id is not
+# indexed, so Postgres hashed a whole date range of settlements against every
+# payment. Two date-filtered reads and a dict do the same work in a fraction of
+# the time, and the row counts are small enough to carry (about 15k payments
+# and 60k settlements for one day).
+_TXN_SQL = """
 SELECT
-    txn.txn_id, txn.network_txn_id, txn.crrn, txn.stan, txn.merchant_code,
-    txn.txn_amount, txn.txn_date, txn.txn_date_time, txn.txn_mode,
-    txn.institution_name, txn.issuer_institution_name, txn.real_time,
-    st.id AS settle_id, st.amount AS settle_amount, st.service_charge,
-    st.status AS settle_status, st.current_status, st.status_code,
-    st.remarks, st.settle_date, st.settle_date_time, st.settlement_frequency,
-    st.bank_name_or_wallet_name, st.settle_crrn
-FROM txn
-LEFT JOIN st ON st.ref_id = txn.network_txn_id
+    t.txn_id, t.network_txn_id, t.crrn, t.stan, t.merchant_code,
+    t.txn_amount, t.txn_date, t.txn_date_time, t.txn_mode,
+    t.institution_name, t.issuer_institution_name,
+    t.is_real_time_merchant_settled AS real_time
+FROM operators.transactions t
+WHERE t.txn_date BETWEEN %(date_from)s AND %(date_to)s
+  AND t.payment_status = 'SUCCESS'
+"""
+
+_SETTLE_SQL = """
+SELECT
+    f.id, f.ref_id, f.merchant_code, f.amount, f.service_charge,
+    f.status, f.current_status, f.status_code, f.remarks,
+    f.date AS settle_date, f.date_time AS settle_date_time,
+    f.settlement_frequency, f.bank_name_or_wallet_name, f.crrn AS settle_crrn
+FROM operators.fund_transfer_logs f
+WHERE f.date BETWEEN %(date_from)s AND %(settle_to)s
+  AND f.ref_id IS NOT NULL
 """
 
 _BALANCE_SQL = """
@@ -240,7 +237,41 @@ def build_reconciliation(
     }
 
     if progress: progress(RECONCILE_STEPS[0], 0)
-    rows = run_query(_MATCH_SQL, params)
+    payments = run_query(_TXN_SQL, params)
+    settlements = run_query(_SETTLE_SQL, params)
+    # One settlement per payment where there is one at all. Where a ref_id
+    # somehow repeats, the successful one is the answer -- a later success is
+    # what actually happened to the money.
+    by_ref: dict[str, dict] = {}
+    for s in settlements:
+        ref = s.get("ref_id")
+        if ref is None:
+            continue
+        prev = by_ref.get(ref)
+        if prev is None or (
+            (s.get("status") or "").upper() == "SUCCESS"
+            and (prev.get("status") or "").upper() != "SUCCESS"
+        ):
+            by_ref[ref] = s
+
+    rows = []
+    for p in payments:
+        s = by_ref.get(p.get("network_txn_id")) or {}
+        rows.append({
+            **p,
+            "settle_id": s.get("id"),
+            "settle_amount": s.get("amount"),
+            "service_charge": s.get("service_charge"),
+            "settle_status": s.get("status"),
+            "current_status": s.get("current_status"),
+            "status_code": s.get("status_code"),
+            "remarks": s.get("remarks"),
+            "settle_date": s.get("settle_date"),
+            "settle_date_time": s.get("settle_date_time"),
+            "settlement_frequency": s.get("settlement_frequency"),
+            "bank_name_or_wallet_name": s.get("bank_name_or_wallet_name"),
+            "settle_crrn": s.get("settle_crrn"),
+        })
 
     if progress: progress(RECONCILE_STEPS[1], 1)
     balances = {

@@ -8,6 +8,7 @@ import SettlementTypePage from "./pages/SettlementTypePage";
 import SettingsPage from "./pages/SettingsPage";
 import IssuerAcquirerPage from "./pages/IssuerAcquirerPage";
 import DisputesPage from "./pages/DisputesPage";
+import ReconcilePage from "./pages/ReconcilePage";
 
 function App() {
   return (
@@ -24,6 +25,7 @@ function App() {
           <Route path="/settlement-type" element={<SettlementTypePage />} />
           <Route path="/issuer-acquirer" element={<IssuerAcquirerPage />} />
           <Route path="/disputes" element={<DisputesPage />} />
+          <Route path="/reconcile" element={<ReconcilePage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Routes>

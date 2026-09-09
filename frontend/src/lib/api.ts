@@ -873,3 +873,67 @@ export const sessionsApi = {
 
   activity: (id: number) => request<SessionActivity>(`/sessions/${id}/activity`),
 };
+
+// --- Reconciliation ---------------------------------------------------------
+// Does everything that came in go back out? Runs as a job: matching a day
+// against its settlements takes about eighty seconds.
+
+export interface ReconTotals {
+  incoming_txns: number; incoming_amount: number;
+  settled_txns: number; settled_amount: number; difference: number;
+  settled_later: number; settled_later_amount: number;
+  settlement_failed: number; settlement_failed_amount: number;
+  awaiting_settlement: number; awaiting_amount: number;
+  not_in_settlement_report: number; not_in_report_amount: number;
+  batch_merchant_txns: number; batch_merchant_amount: number;
+  batch_merchants: number; batch_took_amount: number; batch_paid_amount: number;
+  batch_unexplained: number;
+  orphan_settlements: number; orphan_amount: number;
+  orphan_aggregate: number; orphan_realtime: number;
+  exceptions: number;
+}
+
+export interface ReconRow {
+  txn_id: string | null; crrn: string | null; mid: string;
+  merchant: string | null; partner: string; txn_amount: number;
+  txn_date: string; txn_date_time: string;
+  settle_crrn: string | null; settle_amount: number;
+  settle_status: string | null; settle_date: string;
+  hold_balance: number; total_balance: number;
+  bucket: string; why: string;
+}
+
+export interface ReconBatchRow {
+  mid: string; partner: string; txns: number; took_amount: number;
+  settlements: number; paid_amount: number; failed_settlements: number;
+  variance: number; hold_balance: number; explained_by_balance: boolean;
+}
+
+export interface ReconResult {
+  range: { from: string; to: string };
+  totals: ReconTotals;
+  buckets: Record<string, ReconRow[]>;
+  batch: ReconBatchRow[];
+  orphans: { mid: string; amount: number; date: string; why: string; expected_to_match: boolean }[];
+  orphan_note: string;
+  exceptions: ReconRow[];
+}
+
+export interface ReconJob {
+  id: string; steps: string[]; step: string; step_index: number;
+  done: boolean; error: string | null; elapsed_seconds: number;
+  result?: ReconResult;
+}
+
+export const reconcileApi = {
+  start: (from: string, to: string) =>
+    request<{ job_id: string; steps: string[] }>(
+      `/reconcile/start?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+      { method: "POST" }
+    ),
+
+  status: (jobId: string) => request<ReconJob>(`/reconcile/status/${jobId}`),
+
+  reportUrl: (from: string, to: string) =>
+    `/api/reconcile/report?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
+};
