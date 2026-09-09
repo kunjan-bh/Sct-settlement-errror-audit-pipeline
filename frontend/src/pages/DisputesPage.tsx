@@ -176,6 +176,14 @@ function OpsBar({
           hold flag, is what says this is outstanding.
         </p>
       )}
+      {d.status === "IN_PROGRESS" && (
+        <p className="text-[11px] text-violet-900 bg-violet-50 border border-violet-200 rounded px-2.5 py-1.5">
+          This settlement did not fail — it started and never finished, and is still in
+          progress at the switch{d.status_code ? ` (code ${d.status_code})` : ""}. The money
+          is on the merchant rather than with them, so it needs chasing like a failure, but
+          retrying is not the fix: find out why it never completed.
+        </p>
+      )}
       {d.carried_over && (
         <p className="text-[11px] text-blue-900 bg-blue-50 border border-blue-200 rounded px-2.5 py-1.5">
           Carried forward from {d.date}, outside the range you are viewing. Anything left
@@ -741,6 +749,12 @@ export default function DisputesPage() {
                 {d.double_pay_risk && (
                   <span className="shrink-0 inline-flex items-center gap-1 text-[11px] font-semibold text-amber-800 bg-amber-100 border border-amber-200 rounded px-2 py-0.5">
                     <FiAlertTriangle className="text-[11px]" /> verify before retry
+                  </span>
+                )}
+                {d.status === "IN_PROGRESS" && (
+                  <span className="shrink-0 text-[11px] font-semibold text-violet-800 bg-violet-50 border border-violet-200 rounded px-2 py-0.5"
+                    title="Started and never finished — still in progress at the switch">
+                    stuck{d.status_code ? ` · ${d.status_code}` : ""}
                   </span>
                 )}
                 {d.carried_over && (
