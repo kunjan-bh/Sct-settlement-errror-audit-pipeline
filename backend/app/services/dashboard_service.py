@@ -12,7 +12,7 @@ from collections import defaultdict
 from app.extensions import db
 from app.models.transaction import Transaction
 from app.models.issue_status import IssueStatus
-from app.services.status_utils import normalize_txn_status
+from app.services.status_utils import issue_partner_key, normalize_txn_status
 
 
 def build_dashboard(batch_id: int) -> dict:
@@ -64,12 +64,56 @@ def _get_last_solved_comment(side: str, partner_name: str | None, category: str,
     return prev.comment if prev else None
 
 
+EXCLUDED_OPS_STATUS = "exclude"
+
+
+def _effective_ops_status(txn, issue_statuses: dict) -> str:
+    """
+    What the operator decided about this row: its own MID override if there is
+    one, otherwise its issue card's status, otherwise pending.
+
+    Mirrors the rule in mail_service.batch_summary_numbers -- the two must
+    agree, since one draws the cards and the other the chart beside them.
+    """
+    side = txn.error_side or "unknown"
+    key = (
+        side,
+        issue_partner_key(txn.partner_name, txn.partner_type),
+        txn.error_category or "Unclassified",
+        normalize_txn_status(txn.status),
+    )
+    issue = issue_statuses.get(key)
+    if issue is None:
+        return "pending"
+    overrides = issue.mid_overrides or {}
+    raw = overrides.get(txn.mid)
+    if raw is not None:
+        status = raw.get("status") if isinstance(raw, dict) else raw
+        if status:
+            return status
+    return issue.status or "pending"
+
+
 def _build_totals(transactions: list[Transaction], issue_statuses: dict) -> dict:
     total = len(transactions)
     # total_transactions counts the file as delivered; every other figure here
     # excludes failures that a later reprocess already settled.
     retry_resolved = sum(1 for t in transactions if t.retry_resolved)
-    live = [t for t in transactions if not t.retry_resolved]
+
+    # Excluded work is not counted either. The cards used to show every raw
+    # failure while the donut and the email showed only what was left to do,
+    # so a session read "580 failed settlements" on screen and "42" in its own
+    # report -- 548 of them being an aggregator someone had deliberately taken
+    # off the list. The same population everywhere, or the numbers argue.
+    excluded_count = sum(
+        1 for t in transactions
+        if not t.retry_resolved and _effective_ops_status(t, issue_statuses) == EXCLUDED_OPS_STATUS
+    )
+    live = [
+        t for t in transactions
+        if not t.retry_resolved
+        and _effective_ops_status(t, issue_statuses) != EXCLUDED_OPS_STATUS
+    ]
 
     # Bucket every row through the shared normalizer -- the input files spell
     # the third bucket "In progress", which ops calls "LO".
@@ -92,6 +136,7 @@ def _build_totals(transactions: list[Transaction], issue_statuses: dict) -> dict
 
     return {
         "total_transactions": total,
+        "excluded": excluded_count,
         "pending": pending,
         "failed": failed,
         "settlement_failed": settlement_failed,
