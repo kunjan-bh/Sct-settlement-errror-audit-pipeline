@@ -8,10 +8,11 @@ buckets mean and why the join is what it is.
 import io
 from datetime import date, datetime, timedelta
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, current_app, jsonify, request, send_file
 
 from app.services.core_db import ReadOnlyViolation
-from app.services.reconcile_service import build_reconciliation
+from app.services.job_runner import job_status, start_job
+from app.services.reconcile_service import RECONCILE_STEPS, build_reconciliation
 
 reconcile_bp = Blueprint("reconcile", __name__, url_prefix="/api/reconcile")
 
@@ -87,3 +88,35 @@ def report():
         as_attachment=True,
         download_name=name,
     )
+
+
+@reconcile_bp.post("/start")
+def start():
+    """
+    Begin a reconciliation and return a job id to poll.
+
+    Matching a day takes about a minute; holding the request open for that
+    reads as a hung page, and gives no way to say which stage it is on.
+    """
+    try:
+        d_from, d_to = _range_from_request()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    app = current_app._get_current_object()
+    job_id = start_job(
+        app,
+        lambda progress: build_reconciliation(d_from, d_to, progress=progress),
+        RECONCILE_STEPS,
+    )
+    return jsonify({"job_id": job_id, "steps": RECONCILE_STEPS,
+                    "range": {"from": str(d_from), "to": str(d_to)}}), 202
+
+
+@reconcile_bp.get("/status/<job_id>")
+def status(job_id):
+    """Where a running reconciliation has got to, with the result once done."""
+    job = job_status(job_id)
+    if job is None:
+        return jsonify({"error": "No such job — it may have expired."}), 404
+    return jsonify(job)

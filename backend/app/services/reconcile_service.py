@@ -127,9 +127,16 @@ LEFT JOIN paid ON paid.merchant_code = took.merchant_code
 ORDER BY took.amount DESC
 """
 
-# Settlements in the window that no incoming payment accounts for. Rare, and
-# worth seeing: money left without a payment behind it is the one direction
-# that should never happen.
+# Settlements with no single payment behind them.
+#
+# Checked against the live switch: on 8 Sep all 195 of these were ON_CALL (109)
+# or SYSTEM_DEFAULT (86) and not one was REAL_TIME, and widening the payment
+# lookback from 3 days to 30 changed nothing. They are aggregate payouts -- one
+# transfer covering many payments -- so no individual transaction corresponds
+# to them and none ever will. Reported as fact, not as a finding.
+#
+# An unmatched REAL_TIME settlement would be a different matter, since those
+# are raised one per payment. Those are flagged separately below.
 # Written as an anti-join rather than NOT EXISTS: the correlated form re-probed
 # operators.transactions once per settlement and blew the statement timeout.
 _ORPHAN_SQL = """
@@ -149,7 +156,7 @@ took AS (
 )
 SELECT paid.id, paid.merchant_code, paid.crrn, paid.amount, paid.status,
        paid.date, paid.remarks, paid.bank_name_or_wallet_name,
-       paid.settlement_frequency
+       paid.settlement_frequency, paid.ref_id
 FROM paid
 LEFT JOIN took ON took.network_txn_id = paid.ref_id
 WHERE took.network_txn_id IS NULL
@@ -207,7 +214,18 @@ def _classify(row: dict, today: date) -> tuple[str, str]:
     )
 
 
-def build_reconciliation(date_from: str | date, date_to: str | date) -> dict:
+RECONCILE_STEPS = [
+    "Reading payments and matching settlements",
+    "Reading merchant balances",
+    "Classifying every payment",
+    "Reconciling batch-settled merchants",
+    "Checking settlements with no payment",
+]
+
+
+def build_reconciliation(
+    date_from: str | date, date_to: str | date, progress=None,
+) -> dict:
     """
     Reconcile incoming payments against outgoing settlements for a date range.
 
@@ -221,13 +239,17 @@ def build_reconciliation(date_from: str | date, date_to: str | date) -> dict:
         "settle_to": str(d_to + timedelta(days=SETTLE_LOOKAHEAD_DAYS)),
     }
 
+    if progress: progress(RECONCILE_STEPS[0], 0)
     rows = run_query(_MATCH_SQL, params)
+
+    if progress: progress(RECONCILE_STEPS[1], 1)
     balances = {
         (b.get("merchant_code") or "").strip(): b
         for b in run_query(_BALANCE_SQL)
     }
     resolver = PartnerResolver.load()
 
+    if progress: progress(RECONCILE_STEPS[2], 2)
     buckets: dict[str, list[dict]] = {}
     incoming_amount = 0.0
     settled_amount = 0.0
@@ -272,6 +294,7 @@ def build_reconciliation(date_from: str | date, date_to: str | date) -> dict:
         })
 
     # Batch merchants, reconciled on totals rather than per payment.
+    if progress: progress(RECONCILE_STEPS[3], 3)
     batch_rows = run_query(_BATCH_SQL, params)
     batch = []
     batch_took = batch_paid = 0.0
@@ -297,12 +320,37 @@ def build_reconciliation(date_from: str | date, date_to: str | date) -> dict:
             "explained_by_balance": abs(variance) <= max(hold, 0) + 0.01,
         })
 
+    if progress: progress(RECONCILE_STEPS[4], 4)
     orphans = run_query(_ORPHAN_SQL, {
         "date_from": str(d_from), "date_to": str(d_to),
         # An orphan check has to look back before the window, or a payment made
         # yesterday and settled today is called an orphan.
         "txn_from": str(d_from - timedelta(days=SETTLE_LOOKAHEAD_DAYS)),
     })
+
+    orphan_rows = []
+    aggregate_orphans = realtime_orphans = 0
+    for o in orphans:
+        freq = (o.get("settlement_frequency") or "").upper()
+        is_realtime = freq == "REAL_TIME"
+        if is_realtime:
+            realtime_orphans += 1
+        else:
+            aggregate_orphans += 1
+        orphan_rows.append({
+            "id": o.get("id"), "mid": o.get("merchant_code"), "crrn": o.get("crrn"),
+            "amount": _num(o.get("amount")), "date": str(o.get("date") or ""),
+            "remarks": o.get("remarks"),
+            "bank_or_wallet": o.get("bank_name_or_wallet_name"),
+            "settlement_frequency": o.get("settlement_frequency"),
+            "expected_to_match": is_realtime,
+            "why": (
+                "Real-time settlement with no payment found — should have matched."
+                if is_realtime else
+                f"{freq.replace('_', ' ').title() or 'Batch'} payout covering several "
+                "payments at once, so no single transaction matches it."
+            ),
+        })
 
     def count(name: str) -> int:
         return len(buckets.get(name, []))
@@ -341,17 +389,26 @@ def build_reconciliation(date_from: str | date, date_to: str | date) -> dict:
             "batch_took_amount": round(batch_took, 2),
             "batch_paid_amount": round(batch_paid, 2),
             "batch_unexplained": len([b for b in batch if not b["explained_by_balance"]]),
-            "orphan_settlements": len(orphans),
-            "orphan_amount": round(sum(_num(o.get("amount")) for o in orphans), 2),
+            "orphan_settlements": len(orphan_rows),
+            "orphan_amount": round(sum(x["amount"] for x in orphan_rows), 2),
+            "orphan_aggregate": aggregate_orphans,
+            "orphan_realtime": realtime_orphans,
             "exceptions": len(exceptions),
         },
         "buckets": {k: v for k, v in buckets.items()},
         "batch": batch,
-        "orphans": [{
-            "id": o.get("id"), "mid": o.get("merchant_code"), "crrn": o.get("crrn"),
-            "amount": _num(o.get("amount")), "date": str(o.get("date") or ""),
-            "remarks": o.get("remarks"),
-            "bank_or_wallet": o.get("bank_name_or_wallet_name"),
-        } for o in orphans],
+        "orphans": orphan_rows,
+        "orphan_note": (
+            f"{len(orphan_rows):,} settlements had no single payment behind them. "
+            f"{aggregate_orphans:,} are batch or on-call payouts, which cover many "
+            "payments in one transfer, so no individual transaction corresponds to "
+            "them — expected, not a finding. "
+            + (
+                f"{realtime_orphans:,} are real-time settlements, which are raised one "
+                "per payment and should have matched; those are worth checking."
+                if realtime_orphans else
+                "None were real-time, which are the only kind that should match one to one."
+            )
+        ),
         "exceptions": exceptions,
     }
