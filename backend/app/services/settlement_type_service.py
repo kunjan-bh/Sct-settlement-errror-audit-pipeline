@@ -16,7 +16,8 @@ from app.extensions import db
 from app.models.batch import Batch
 from app.models.transaction import Transaction
 from app.services.error_classification import _entity_of
-from app.services.status_utils import normalize_txn_status
+from app.services.classification_service import PartnerResolver
+from app.services.core_db import run_query
 
 # raw Settled By value -> response key. Anything else (blank, unrecognized)
 # falls into "unknown" -- counted, never silently dropped.
@@ -24,6 +25,18 @@ _METHOD_KEYS = {
     "Real Time": "real_time",
     "System Default": "system_default",
     "On Call": "on_call",
+}
+
+# The switch spells the same three modes in its own way.
+_SWITCH_METHOD_KEYS = {
+    "REAL_TIME": "real_time",
+    "SYSTEM_DEFAULT": "system_default",
+    "ON_CALL": "on_call",
+}
+_SWITCH_METHOD_LABELS = {
+    "REAL_TIME": "Real Time",
+    "SYSTEM_DEFAULT": "System Default",
+    "ON_CALL": "On Call",
 }
 
 _EMPTY_METHOD_COUNTS = {"real_time": 0, "system_default": 0, "on_call": 0, "unknown": 0}
@@ -69,35 +82,37 @@ def _empty_result(date_from: date, date_to: date) -> dict:
     }
 
 
+_SETTLED_SQL = """
+SELECT merchant_code, merchant_name, settlement_frequency,
+       amount, service_charge, bank_name_or_wallet_name, acquirer_name
+FROM operators.fund_transfer_logs
+WHERE date BETWEEN %(date_from)s AND %(date_to)s
+  AND status = 'SUCCESS'
+"""
+
+
+def _switch_rows(date_from: date, date_to: date) -> list[dict]:
+    """Every successful settlement in range, straight from the switch."""
+    return run_query(_SETTLED_SQL, {
+        "date_from": date_from.isoformat(), "date_to": date_to.isoformat(),
+    })
+
+
 def build_settlement_type_report(date_from: date, date_to: date) -> dict:
     """
-    date_from/date_to are inclusive calendar dates. Every batch whose
-    created_at date falls in [date_from, date_to] is included, open or
-    finished -- same batch scope as Analytics.
-    """
-    range_start = datetime.combine(date_from, datetime.min.time())
-    range_end_exclusive = datetime.combine(date_to + timedelta(days=1), datetime.min.time())
+    How the day's settlements were made -- Real Time, System Default or On
+    Call -- and by which aggregator or wallet.
 
-    batches = Batch.query.filter(
-        Batch.created_at >= range_start, Batch.created_at < range_end_exclusive
-    ).all()
-    if not batches:
+    Read from the switch by date rather than from ingested batches. The batch
+    version could only answer for days somebody had happened to upload, and
+    reported nothing at all for any other date, which is a confusing way for a
+    date picker to behave. The switch has every day.
+    """
+    rows = _switch_rows(date_from, date_to)
+    if not rows:
         return _empty_result(date_from, date_to)
 
-    batch_ids = [b.id for b in batches]
-
-    txn_rows = (
-        db.session.query(
-            Transaction.status,
-            Transaction.settled_by,
-            Transaction.error_side,
-            Transaction.partner_name,
-            Transaction.partner_type,
-            Transaction.txn_amount,
-        )
-        .filter(Transaction.batch_id.in_(batch_ids))
-        .all()
-    )
+    resolver = PartnerResolver.load()
 
     method_breakdown: dict[str, int] = dict(_EMPTY_METHOD_COUNTS)
     method_amount_breakdown: dict[str, float] = dict(_EMPTY_METHOD_AMOUNTS)
@@ -105,19 +120,20 @@ def build_settlement_type_report(date_from: date, date_to: date) -> dict:
     total_settled = 0
     total_amount_settled = 0.0
 
-    for row in txn_rows:
-        if normalize_txn_status(row.status) != "success":
-            continue
-
+    for row in rows:
         total_settled += 1
-        amount = float(row.txn_amount) if row.txn_amount is not None else 0.0
+        amount = _num(row.get("amount"))
         total_amount_settled += amount
 
-        method = _method_key(row.settled_by)
+        method = _SWITCH_METHOD_KEYS.get(
+            (row.get("settlement_frequency") or "").strip().upper(), "unknown"
+        )
         method_breakdown[method] += 1
         method_amount_breakdown[method] += amount
 
-        entity, entity_type = _entity_of(row)  # Row supports attribute access by column name
+        mid = (row.get("merchant_code") or "").strip()
+        entity, bucket = resolver.resolve(mid)
+        entity_type = "aggregator" if bucket == "aggregator" else "bank_wallet"
         ea = entity_acc.setdefault(entity, {
             "entity": entity, "entity_type": entity_type, "total": 0, "amount": 0.0,
             **_EMPTY_METHOD_COUNTS,
@@ -139,7 +155,9 @@ def build_settlement_type_report(date_from: date, date_to: date) -> dict:
             "system_default": method_breakdown["system_default"],
             "on_call": method_breakdown["on_call"],
             "unknown": method_breakdown["unknown"],
-            "batches_included": len(batch_ids),
+            # Kept so the response shape does not change; nothing is read from
+            # batches any more, so there are none to count.
+            "batches_included": 0,
         },
         "method_breakdown": method_breakdown,
         "method_amount_breakdown": {k: round(v, 2) for k, v in method_amount_breakdown.items()},
@@ -149,47 +167,35 @@ def build_settlement_type_report(date_from: date, date_to: date) -> dict:
 
 def build_settlement_type_mid_rows(date_from: date, date_to: date) -> list[dict]:
     """
-    One row per successful settlement in range -- MID, merchant, whatever
-    issuer/acquirer names the source file carried, and settlement type.
-    Feeds the report's per-entity MID sheets only (report_generator.py);
-    the on-page report and its cache never see this.
+    One row per successful settlement -- MID, merchant, the switch's own
+    acquirer and bank/wallet names, and how it settled. Feeds the report's
+    per-entity MID sheets.
 
-    Deliberately a SEPARATE query from build_settlement_type_report, which
-    runs on every page view/date change and stays column-projected for that
-    reason. This one also pulls extra_data (for Acquirer Name / Bank-Wallet
-    Name) and only runs when a report is actually downloaded, so it doesn't
-    need to stay as light.
+    A separate call from build_settlement_type_report, which runs on every date
+    change; this one only runs when a report is downloaded.
     """
-    range_start = datetime.combine(date_from, datetime.min.time())
-    range_end_exclusive = datetime.combine(date_to + timedelta(days=1), datetime.min.time())
-
-    batches = Batch.query.filter(
-        Batch.created_at >= range_start, Batch.created_at < range_end_exclusive
-    ).all()
-    if not batches:
+    rows = _switch_rows(date_from, date_to)
+    if not rows:
         return []
 
-    batch_ids = [b.id for b in batches]
-    transactions = Transaction.query.filter(Transaction.batch_id.in_(batch_ids)).all()
-
-    rows = []
-    for txn in transactions:
-        if normalize_txn_status(txn.status) != "success":
-            continue
-
-        entity, entity_type = _entity_of(txn)
-        extra = txn.extra_data or {}
-        rows.append({
+    resolver = PartnerResolver.load()
+    out = []
+    for row in rows:
+        mid = (row.get("merchant_code") or "").strip()
+        entity, bucket = resolver.resolve(mid)
+        out.append({
             "entity": entity,
-            "entity_type": entity_type,
-            "mid": txn.mid,
-            "merchant_name": txn.merchant_name,
-            "acquirer_name": extra.get("Acquirer Name") or "",
-            "bank_wallet_name": extra.get("Bank/Wallet Name") or "",
-            "settlement_type": _method_label(txn.settled_by),
-            "amount": float(txn.txn_amount) if txn.txn_amount is not None else 0.0,
-            "service_charge": _num(extra.get("Service Charge")),
+            "entity_type": "aggregator" if bucket == "aggregator" else "bank_wallet",
+            "mid": mid,
+            "merchant_name": row.get("merchant_name") or "",
+            "acquirer_name": row.get("acquirer_name") or "",
+            "bank_wallet_name": row.get("bank_name_or_wallet_name") or "",
+            "settlement_type": _SWITCH_METHOD_LABELS.get(
+                (row.get("settlement_frequency") or "").strip().upper(), ""
+            ),
+            "amount": _num(row.get("amount")),
+            "service_charge": _num(row.get("service_charge")),
         })
 
-    rows.sort(key=lambda r: (r["entity"], r["mid"] or ""))
-    return rows
+    out.sort(key=lambda r: (r["entity"], r["mid"] or ""))
+    return out
