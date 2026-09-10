@@ -143,11 +143,18 @@ def generate_reconcile_xlsx(data: dict, generated_at: str) -> bytes:
     resid = ws.cell(row=r, column=2, value=gap)
     resid.number_format = _MONEY
     resid.fill = _OK if abs(gap) < 0.01 else _BAD
+    r += 1
+    ws.cell(row=r, column=1, value="Settled at a different amount than taken").font = _LABEL
+    mm = ws.cell(row=r, column=2, value=t.get("amount_mismatches", 0))
+    mm.fill = _OK if not t.get("amount_mismatches") else _BAD
+
     r += 2
-    ws.cell(row=r, column=1, value=(
-        "Balances exactly." if abs(gap) < 0.01
-        else "Does NOT balance — the residual above is unaccounted for."
-    )).font = _LABEL
+    # Saying plainly what the zero above does and does not prove. Every payment
+    # is in exactly one of the lines, so they always sum to the difference --
+    # presenting that as a clean bill of health would be flattering the report.
+    note = data.get("balance_note") or ""
+    ws.cell(row=r, column=1, value=note).alignment = Alignment(wrap_text=True, vertical="top")
+    ws.merge_cells(start_row=r, start_column=1, end_row=r + 2, end_column=2)
 
     ws.column_dimensions["A"].width = 46
     ws.column_dimensions["B"].width = 20

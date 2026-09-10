@@ -891,6 +891,8 @@ export interface ReconTotals {
   orphan_settlements: number; orphan_amount: number;
   orphan_aggregate: number; orphan_realtime: number;
   exceptions: number;
+  amount_mismatches: number;
+  amount_mismatch_amount: number;
 }
 
 export interface ReconRow {
@@ -916,6 +918,7 @@ export interface ReconResult {
   batch: ReconBatchRow[];
   orphans: { mid: string; amount: number; date: string; why: string; expected_to_match: boolean }[];
   orphan_note: string;
+  balance_note: string;
   exceptions: ReconRow[];
 }
 

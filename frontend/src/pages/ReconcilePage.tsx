@@ -224,7 +224,7 @@ export default function ReconcilePage() {
             </div>
 
             <div className={`border rounded-lg shadow-sm p-5 text-sm ${
-              Math.abs(residual) < 0.01 ? TONE.green : TONE.red
+              Math.abs(residual) < 0.01 && !t.amount_mismatches ? TONE.green : TONE.red
             }`}>
               <h2 className="text-sm font-semibold mb-2">Accounted for by</h2>
               <Row label="Settled later / reprocessed" value={money(t.settled_later_amount)} />
@@ -233,9 +233,14 @@ export default function ReconcilePage() {
               <Row label="Never raised for payment" value={money(t.not_in_report_amount)} />
               <Row label="Batch-settled merchants" value={money(t.batch_merchant_amount)} />
               <div className="border-t border-current/20 mt-2 pt-2">
-                <Row label={Math.abs(residual) < 0.01 ? "Balances exactly" : "Unexplained residual"}
-                  value={money(residual)} strong />
+                <Row label="Unexplained residual" value={money(residual)} strong />
+                <Row label="Settled at a different amount than taken"
+                  value={t.amount_mismatches.toLocaleString()} strong />
               </div>
+              {/* Saying what the zero does and does not prove. Every payment is
+                  in exactly one line above, so they always sum to the
+                  difference -- calling that "balances exactly" flatters it. */}
+              <p className="text-[11px] opacity-80 mt-3 leading-relaxed">{data?.balance_note}</p>
             </div>
           </section>
 

@@ -383,6 +383,20 @@ def build_reconciliation(
             ),
         })
 
+    # The one thing the balance line actually tests.
+    #
+    # Every payment sits in exactly one bucket and the buckets are a partition
+    # of the same population, so "explained" is just every bucket except
+    # settled, and "difference" is incoming minus settled. Those cancel by
+    # construction. The only quantity that can survive is the gap between what
+    # a settled payment took in and what was paid out for it -- so that is what
+    # the residual measures, and it deserves to be named rather than dressed up
+    # as proof that the whole reconciliation is sound.
+    mismatches = [
+        x for x in buckets.get("settled", [])
+        if abs(x["txn_amount"] - x["settle_amount"]) > 0.01
+    ]
+
     def count(name: str) -> int:
         return len(buckets.get(name, []))
 
@@ -425,6 +439,10 @@ def build_reconciliation(
             "orphan_aggregate": aggregate_orphans,
             "orphan_realtime": realtime_orphans,
             "exceptions": len(exceptions),
+            "amount_mismatches": len(mismatches),
+            "amount_mismatch_amount": round(
+                sum(x["txn_amount"] - x["settle_amount"] for x in mismatches), 2
+            ),
         },
         "buckets": {k: v for k, v in buckets.items()},
         "batch": batch,
@@ -442,4 +460,15 @@ def build_reconciliation(
             )
         ),
         "exceptions": exceptions,
+        "amount_mismatches": mismatches,
+        "balance_note": (
+            "Every payment is in exactly one line above, so those lines always sum to "
+            "the difference. What this check really tests is narrower: whether each "
+            "settled payment was paid out at the amount it came in at. "
+            + (
+                f"{len(mismatches):,} were not."
+                if mismatches else
+                "All of them were."
+            )
+        ),
     }
