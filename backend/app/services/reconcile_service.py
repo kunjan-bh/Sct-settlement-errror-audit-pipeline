@@ -165,7 +165,7 @@ def _as_date(v: str | date) -> date:
     return v if isinstance(v, date) else date.fromisoformat(str(v))
 
 
-def _classify(row: dict, today: date) -> tuple[str, str]:
+def _classify(row: dict, today: date, batch_merchants: set[str]) -> tuple[str, str]:
     """
     (bucket, why) for one incoming payment.
 
@@ -197,7 +197,15 @@ def _classify(row: dict, today: date) -> tuple[str, str]:
         )
 
     # No settlement row at all.
-    if not row.get("real_time"):
+    #
+    # Whether this merchant settles in batches is decided per merchant, not
+    # from the flag on this row. is_real_time_merchant_settled is per payment
+    # and can disagree with the merchant's own behaviour: on 9 Sep exactly one
+    # payment out of 6,779 carried false for a merchant whose every other
+    # payment was real-time, and trusting the row filed NPR 13,800 as "settled
+    # in batches, reconciled on totals" -- so it was never matched, never
+    # flagged, and sat in the merchant's hold balance unremarked.
+    if (row.get("merchant_code") or "").strip() in batch_merchants:
         return "batch_merchant", (
             "Settled in batches, not per payment — reconciled on totals below."
         )
@@ -280,6 +288,15 @@ def build_reconciliation(
     }
     resolver = PartnerResolver.load()
 
+    # A merchant is only settled in batches if none of their payments settle in
+    # real time. One stray flag does not make a real-time merchant a batch one.
+    realtime_mids = {
+        (p.get("merchant_code") or "").strip() for p in payments if p.get("real_time")
+    }
+    batch_merchants = {
+        (p.get("merchant_code") or "").strip() for p in payments
+    } - realtime_mids
+
     if progress: progress(RECONCILE_STEPS[2], 2)
     buckets: dict[str, list[dict]] = {}
     incoming_amount = 0.0
@@ -289,7 +306,7 @@ def build_reconciliation(
         bal = balances.get((r.get("merchant_code") or "").strip()) or {}
         r["hold_balance"] = bal.get("hold_balance")
         r["total_balance"] = bal.get("total_balance")
-        bucket, why = _classify(r, today)
+        bucket, why = _classify(r, today, batch_merchants)
         amount = _num(r.get("txn_amount"))
         incoming_amount += amount
         if bucket == "settled":
@@ -326,7 +343,10 @@ def build_reconciliation(
 
     # Batch merchants, reconciled on totals rather than per payment.
     if progress: progress(RECONCILE_STEPS[3], 3)
-    batch_rows = run_query(_BATCH_SQL, params)
+    batch_rows = [
+        b for b in run_query(_BATCH_SQL, params)
+        if (b.get("merchant_code") or "").strip() in batch_merchants
+    ]
     batch = []
     batch_took = batch_paid = 0.0
     for b in batch_rows:
