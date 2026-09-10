@@ -989,6 +989,22 @@ export interface EntityEmailDraft {
   smtp_configured: boolean;
 }
 
+export const issuerAcquirerEmailApi = {
+  preview: (from: string, to: string) =>
+    request<EntityEmailDraft>(
+      `/issuer-acquirer/email?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
+    ),
+
+  send: (body: {
+    to: string; cc: string; from_addr: string; from_name: string;
+    subject: string; body_html: string; signature_html: string;
+  }) =>
+    request<{ sent_to: string[] }>("/issuer-acquirer/email", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+};
+
 export const entityEmailApi = {
   preview: (entity: string, from: string, to: string) =>
     request<EntityEmailDraft>(

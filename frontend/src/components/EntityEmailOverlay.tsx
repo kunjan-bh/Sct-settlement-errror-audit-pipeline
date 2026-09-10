@@ -3,8 +3,10 @@ import { FiMail, FiSend, FiX } from "react-icons/fi";
 import { entityEmailApi, type EntityEmailDraft } from "../lib/api";
 
 /**
- * Compose the note to an aggregator listing which of their settlements were
- * reprocessed rather than settled in real time.
+ * Compose, check and send one of the outbound summaries -- the note to an
+ * aggregator about their reprocessed settlements, or the issuing/acquiring
+ * reconciliation. Both are a sentence and a table with editable recipients,
+ * so they share this rather than having two copies of the same flow.
  *
  * Everything is editable before it goes, and what is on screen is exactly what
  * is sent -- the server does not re-derive the body, so an operator who
@@ -33,10 +35,28 @@ function remember(entity: string, to: string) {
   }
 }
 
+type Sender = (body: {
+  to: string; cc: string; from_addr: string; from_name: string;
+  subject: string; body_html: string; signature_html: string;
+}) => Promise<{ sent_to: string[] }>;
+
 export default function EntityEmailOverlay({
-  entity, from, to, onClose,
+  entity, from, to, onClose, title, loader, sender, defaultTo,
 }: {
-  entity: string; from: string; to: string; onClose: () => void;
+  entity: string;
+  from: string;
+  to: string;
+  onClose: () => void;
+  /** Heading. Defaults to the aggregator wording. */
+  title?: string;
+  /** Where the draft comes from. Defaults to the per-aggregator endpoint, so
+   *  the same overlay serves the issuing/acquiring summary without a second
+   *  copy of the compose, edit and send flow. */
+  loader?: () => Promise<EntityEmailDraft>;
+  sender?: Sender;
+  /** Whether to use the recipients the draft arrives with. The aggregator note
+   *  has none to offer; the internal summary does. */
+  defaultTo?: boolean;
 }) {
   const [draft, setDraft] = useState<EntityEmailDraft | null>(null);
   const [recipient, setRecipient] = useState("");
@@ -50,26 +70,27 @@ export default function EntityEmailOverlay({
 
   useEffect(() => {
     let cancelled = false;
-    entityEmailApi
-      .preview(entity, from, to)
+    (loader ? loader() : entityEmailApi.preview(entity, from, to))
       .then((d) => {
         if (cancelled) return;
         setDraft(d);
         setSubject(d.subject);
         setBody(d.body_html);
-        setRecipient(rememberedFor(entity));
+        setRecipient(defaultTo ? d.to : rememberedFor(entity));
+        if (defaultTo) setCc(d.cc || "");
       })
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : "Could not build the email"))
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
-  }, [entity, from, to]);
+  }, [entity, from, to, loader, defaultTo]);
 
   const send = async () => {
     if (!draft) return;
     setSending(true);
     setError(null);
     try {
-      const r = await entityEmailApi.send({
+      const send_ = sender ?? entityEmailApi.send;
+      const r = await send_({
         to: recipient, cc, subject, body_html: body,
         from_addr: draft.from_addr, from_name: draft.from_name,
         signature_html: draft.signature_html,
@@ -89,7 +110,7 @@ export default function EntityEmailOverlay({
         <div className="flex items-center gap-3 px-5 py-3 border-b border-neutral-200">
           <FiMail className="text-neutral-400" />
           <h2 className="text-sm font-semibold text-neutral-900">
-            Email {entity} about reprocessed settlements
+            {title ?? `Email ${entity} about reprocessed settlements`}
           </h2>
           <button type="button" onClick={onClose} aria-label="Close"
             className="ml-auto p-1 text-neutral-400 hover:text-neutral-800 cursor-pointer">
@@ -109,7 +130,7 @@ export default function EntityEmailOverlay({
 
             {!draft.count && (
               <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-                Nothing was reprocessed for {entity} in this range — there may be no reason to send this.
+                Nothing to report for {entity} in this range — there may be no reason to send this.
               </p>
             )}
 
@@ -117,7 +138,7 @@ export default function EntityEmailOverlay({
               <label className="text-xs text-neutral-600">
                 To
                 <input value={recipient} onChange={(e) => setRecipient(e.target.value)}
-                  placeholder="their team's address, comma-separated"
+                  placeholder="comma-separated addresses"
                   className="block w-full mt-1 border border-neutral-300 rounded px-2 py-1.5 text-sm" />
               </label>
               <label className="text-xs text-neutral-600">

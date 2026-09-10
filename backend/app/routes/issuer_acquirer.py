@@ -16,6 +16,8 @@ from contextlib import contextmanager
 
 from flask import Blueprint, current_app, jsonify, request, send_file
 
+from app.services.mail_service import MailError, send_batch_email
+from app.services.issuer_acquirer_mail import build_issuer_acquirer_email
 from app.services.issuer_acquirer_service import (
     build_issuer_acquirer,
     build_issuer_acquirer_from_range,
@@ -188,3 +190,40 @@ def report_range():
         as_attachment=True,
         download_name=f"issuer_acquirer_{d_from}_to_{d_to}.xlsx",
     )
+
+
+@issuer_acquirer_bp.get("/email")
+def email_preview():
+    """The reconciliation as an editable email draft for the chosen dates."""
+    try:
+        d_from, d_to = _range_from_args()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    try:
+        return jsonify(build_issuer_acquirer_email(d_from, d_to))
+    except Exception as exc:  # noqa: BLE001 - the switch being slow is normal
+        return jsonify({
+            "error": f"Could not read the switch: {str(exc).strip().splitlines()[0][:300]}"
+        }), 502
+
+
+@issuer_acquirer_bp.post("/email")
+def email_send():
+    """
+    Send what the operator edited, not a re-derived copy -- so the figures they
+    checked are the figures that go out.
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = send_batch_email(
+            subject=payload.get("subject") or "",
+            from_addr=payload.get("from_addr") or "",
+            from_name=payload.get("from_name") or "",
+            to=payload.get("to") or "",
+            cc=payload.get("cc") or "",
+            body_html=payload.get("body_html") or "",
+            signature_html=payload.get("signature_html"),
+        )
+    except MailError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)

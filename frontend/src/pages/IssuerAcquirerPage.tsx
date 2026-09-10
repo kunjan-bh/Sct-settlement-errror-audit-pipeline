@@ -9,8 +9,9 @@ import {
   Tooltip,
   Legend,
 } from "recharts";
-import { FiDownload, FiRefreshCw } from "react-icons/fi";
-import { issuerAcquirerApi, type IssuerAcquirerData } from "../lib/api";
+import { FiDownload, FiMail, FiRefreshCw } from "react-icons/fi";
+import { issuerAcquirerApi, issuerAcquirerEmailApi, type IssuerAcquirerData } from "../lib/api";
+import EntityEmailOverlay from "../components/EntityEmailOverlay";
 import { localIso, localIsoDaysAgo } from "../lib/localdate";
 import StatCard from "../components/StatCard";
 
@@ -50,6 +51,7 @@ export default function IssuerAcquirerPage() {
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [analyzing, setAnalyzing] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [emailing, setEmailing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleAnalyze = async () => {
@@ -111,6 +113,16 @@ export default function IssuerAcquirerPage() {
           </p>
         </div>
         {data && (
+          <div className="shrink-0 flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setEmailing(true)}
+              title="Email this reconciliation for the dates shown"
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded border border-neutral-300 hover:border-neutral-400 text-neutral-700 font-semibold text-xs transition-colors cursor-pointer"
+            >
+              <FiMail className="text-sm" />
+              Email Summary
+            </button>
           <button
             type="button"
             onClick={handleDownload}
@@ -120,8 +132,22 @@ export default function IssuerAcquirerPage() {
             <FiDownload className="text-sm" />
             {downloading ? "Preparing…" : "Download Report"}
           </button>
+          </div>
         )}
       </header>
+
+      {emailing && (
+        <EntityEmailOverlay
+          entity="Issuing & Acquiring"
+          title={`Email the issuing & acquiring reconciliation — ${from} to ${to}`}
+          from={from}
+          to={to}
+          defaultTo
+          loader={() => issuerAcquirerEmailApi.preview(from, to)}
+          sender={issuerAcquirerEmailApi.send}
+          onClose={() => setEmailing(false)}
+        />
+      )}
 
       <section className="bg-white border border-neutral-200 rounded-lg p-4 shadow-sm">
         <div className="flex flex-wrap items-end gap-3">
