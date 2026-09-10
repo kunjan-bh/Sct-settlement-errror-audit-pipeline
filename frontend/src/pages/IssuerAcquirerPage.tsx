@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ResponsiveContainer,
   BarChart,
@@ -104,9 +104,10 @@ export default function IssuerAcquirerPage() {
             Issuer &amp; Acquirer
           </h1>
           <p className="text-neutral-500 text-sm mt-1 max-w-3xl leading-relaxed">
-            Upload a day's transactions and its settlement file. Every transaction debits an issuer
-            and pays an acquirer, so those two always balance — the gap worth reading is what was
-            transacted against what actually settled. Where they differ, write the reason.
+            Pick a date range. Every transaction debits an issuer and pays an acquirer, so those
+            two always balance — the gap worth reading is what was transacted against what
+            actually settled. Both sides are read from the switch over the same days, so a
+            variance is a real difference rather than two mismatched exports.
           </p>
         </div>
         {data && (
@@ -161,8 +162,7 @@ export default function IssuerAcquirerPage() {
 
           {t.window && (
             <p className="text-neutral-500 text-xs -mt-4">
-              Transactions cover {t.window}
-              {data.files.settlement ? ` · settlement from ${data.files.settlement}` : ""}
+              Covering {t.window}, read from the switch — both sides over the same days.
             </p>
           )}
 

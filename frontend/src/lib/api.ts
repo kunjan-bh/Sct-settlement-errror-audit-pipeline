@@ -503,7 +503,9 @@ export type IssuerAcquirerData = {
   };
   issuing: IssuingRow[];
   acquiring: AcquiringRow[];
-  files: { transaction: string; settlement: string };
+  /** Only when the analysis came from uploaded files. The date-range flow
+   *  reads the switch, so there are no filenames to report. */
+  files?: { transaction: string; settlement: string };
 };
 
 function issuerAcquirerForm(txnFile: File, settlementFile?: File | null) {
