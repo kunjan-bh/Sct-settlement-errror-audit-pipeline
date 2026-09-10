@@ -7,12 +7,13 @@ import io
 import os
 import uuid
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import date, datetime
 
 from flask import Blueprint, request, jsonify, current_app, send_file
 
+from app.services.mail_service import MailError, send_batch_email
+from app.services.settlement_type_mail import REPROCESSED_TYPES, build_entity_email
 from app.services.settlement_type_service import build_settlement_type_report
-from app.services.adhoc_settlement_service import build_adhoc_settlement_type_report
 from app.services.report_generator import (
     generate_settlement_type_report_bytes,
     generate_adhoc_settlement_type_report_bytes,
@@ -74,6 +75,32 @@ def _saved_transaction_upload():
         yield saved
 
 
+def _parse_range():
+    """from/to as inclusive dates, the same pair the page already sends."""
+    raw_from = (request.args.get("from") or "").strip()
+    raw_to = (request.args.get("to") or "").strip()
+    try:
+        d_from = date.fromisoformat(raw_from)
+        d_to = date.fromisoformat(raw_to)
+    except ValueError:
+        raise ValueError("'from' and 'to' must be dates as YYYY-MM-DD.")
+    if d_from > d_to:
+        raise ValueError("'from' is after 'to'.")
+    return d_from, d_to
+
+
+def _requested_types() -> tuple[str, ...]:
+    """
+    Which settlement types to report. Defaults to everything that was not real
+    time, since that is what "reprocessed" means here.
+    """
+    raw = (request.args.get("types") or "").strip()
+    if not raw:
+        return REPROCESSED_TYPES
+    wanted = tuple(t.strip() for t in raw.split(",") if t.strip())
+    return tuple(t for t in wanted if t in REPROCESSED_TYPES) or REPROCESSED_TYPES
+
+
 @settlement_type_bp.get("")
 def get_settlement_type_report():
     """
@@ -127,3 +154,43 @@ def download_settlement_type_report():
         as_attachment=True,
         download_name=filename,
     )
+
+
+@settlement_type_bp.get("/entity-email")
+def entity_email_preview():
+    """
+    Draft an email to one aggregator or wallet listing the settlements of
+    theirs that were reprocessed rather than settled in real time.
+    """
+    entity = (request.args.get("entity") or "").strip()
+    if not entity:
+        return jsonify({"error": "An aggregator or wallet is required."}), 400
+    try:
+        date_from, date_to = _parse_range()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    types = _requested_types()
+    return jsonify(build_entity_email(entity, date_from, date_to, types))
+
+
+@settlement_type_bp.post("/entity-email")
+def send_entity_email():
+    """
+    Send what the operator edited in the overlay -- not a re-derived copy, so
+    what they read is what the aggregator receives.
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        result = send_batch_email(
+            subject=payload.get("subject") or "",
+            from_addr=payload.get("from_addr") or "",
+            from_name=payload.get("from_name") or "",
+            to=payload.get("to") or "",
+            cc=payload.get("cc") or "",
+            body_html=payload.get("body_html") or "",
+            signature_html=payload.get("signature_html"),
+        )
+    except MailError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify(result)

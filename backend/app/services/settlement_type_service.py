@@ -84,7 +84,8 @@ def _empty_result(date_from: date, date_to: date) -> dict:
 
 _SETTLED_SQL = """
 SELECT merchant_code, merchant_name, settlement_frequency,
-       amount, service_charge, bank_name_or_wallet_name, acquirer_name
+       amount, service_charge, bank_name_or_wallet_name, acquirer_name,
+       crrn, date, date_time
 FROM operators.fund_transfer_logs
 WHERE date BETWEEN %(date_from)s AND %(date_to)s
   AND status = 'SUCCESS'
@@ -195,6 +196,11 @@ def build_settlement_type_mid_rows(date_from: date, date_to: date) -> list[dict]
             ),
             "amount": _num(row.get("amount")),
             "service_charge": _num(row.get("service_charge")),
+            # An aggregator needs the CRRN and the date to find a settlement on
+            # their own side; MID and amount alone are not enough to look one up.
+            "crrn": row.get("crrn") or "",
+            "date": str(row.get("date") or ""),
+            "date_time": str(row.get("date_time") or "")[:19],
         })
 
     out.sort(key=lambda r: (r["entity"], r["mid"] or ""))

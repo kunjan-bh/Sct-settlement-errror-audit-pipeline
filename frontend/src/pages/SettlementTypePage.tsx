@@ -12,10 +12,11 @@ import {
   Pie,
   Cell,
 } from "recharts";
-import { FiDownload } from "react-icons/fi";
+import { FiDownload, FiMail } from "react-icons/fi";
 import { settlementTypeApi, type SettlementTypeData, type EntityType } from "../lib/api";
 import { cacheGet, cacheSet } from "../lib/cache";
 import StatCard from "../components/StatCard";
+import EntityEmailOverlay from "../components/EntityEmailOverlay";
 
 /**
  * Settlement Type Report: the success-side counterpart to Analytics. Of
@@ -119,6 +120,10 @@ export default function SettlementTypePage() {
   const [loading, setLoading] = useState(!cached);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  // Which aggregator or wallet to write to about their reprocessed
+  // settlements. Empty means the page is showing everyone, as before.
+  const [emailEntity, setEmailEntity] = useState("");
+  const [composing, setComposing] = useState(false);
 
   const handleDownloadReport = async () => {
     setDownloading(true);
@@ -176,6 +181,35 @@ export default function SettlementTypePage() {
           </p>
         </div>
         {data && data.kpis.total_settled > 0 && (
+          <div className="shrink-0 flex flex-wrap items-center gap-2">
+            {/* Reprocessed settlements are the ones an aggregator wants to hear
+                about: real time needed no intervention, so there is nothing to
+                tell them about it. */}
+            <select
+              value={emailEntity}
+              onChange={(e) => setEmailEntity(e.target.value)}
+              title="Choose an aggregator, wallet or bank to email"
+              className="border border-neutral-300 rounded px-2 py-2 text-xs text-neutral-700 max-w-52"
+            >
+              <option value="">Choose aggregator / wallet…</option>
+              {data.entities.map((e) => (
+                <option key={e.entity} value={e.entity}>
+                  {e.entity} ({(e.on_call + e.system_default).toLocaleString()} reprocessed)
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => setComposing(true)}
+              disabled={!emailEntity}
+              title={emailEntity
+                ? `Email ${emailEntity} the settlements of theirs that were reprocessed`
+                : "Choose an aggregator or wallet first"}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded border border-neutral-300 hover:border-neutral-400 text-neutral-700 font-semibold text-xs transition-colors disabled:opacity-40 cursor-pointer"
+            >
+              <FiMail className="text-sm" />
+              Email Summary
+            </button>
           <button
             type="button"
             onClick={handleDownloadReport}
@@ -185,8 +219,18 @@ export default function SettlementTypePage() {
             <FiDownload className="text-sm" />
             {downloading ? "Preparing…" : "Download Report"}
           </button>
+          </div>
         )}
       </header>
+
+      {composing && emailEntity && (
+        <EntityEmailOverlay
+          entity={emailEntity}
+          from={from}
+          to={to}
+          onClose={() => setComposing(false)}
+        />
+      )}
 
       <section className="bg-white border border-neutral-200 rounded-lg p-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-3">

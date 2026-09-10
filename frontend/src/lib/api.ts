@@ -940,3 +940,30 @@ export const reconcileApi = {
   reportUrl: (from: string, to: string) =>
     `/api/reconcile/report?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
 };
+
+// --- Telling an aggregator what was reprocessed -----------------------------
+
+export interface EntityEmailDraft {
+  to: string; cc: string; from_addr: string; from_name: string;
+  subject: string; body_html: string; signature_html: string;
+  entity: string; count: number; amount: number;
+  breakdown: Record<string, number>;
+  smtp_configured: boolean;
+}
+
+export const entityEmailApi = {
+  preview: (entity: string, from: string, to: string) =>
+    request<EntityEmailDraft>(
+      `/settlement-type/entity-email?entity=${encodeURIComponent(entity)}` +
+      `&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
+    ),
+
+  send: (body: {
+    to: string; cc: string; from_addr: string; from_name: string;
+    subject: string; body_html: string; signature_html: string;
+  }) =>
+    request<{ sent_to: string[] }>("/settlement-type/entity-email", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+};
