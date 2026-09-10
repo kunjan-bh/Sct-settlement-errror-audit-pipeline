@@ -25,15 +25,25 @@ as missing, they would have looked like NPR 3.7m gone astray.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 from app.services.classification_service import PartnerResolver
 from app.services.core_db import run_query
 
 # How long a settlement may reasonably take before its absence is a finding
-# rather than a wait. Settlement can legitimately run a day or two late, and
-# occasionally a week when an aggregator is holding things up.
+# rather than a wait.
+#
+# Real-time settlement is genuinely real time. Measured over 11,633 matched
+# payments on 8 Sep: median 0s, 99.9th percentile 16s, slowest 50s, and not one
+# took longer than an hour. So an hour is already generous, and the two days
+# this used to allow hid the very thing it should have caught -- a payment with
+# no settlement raised sat quietly inside the grace period while the merchant
+# held the money.
+REALTIME_GRACE_HOURS = 1
+
+# Anything not settling in real time is on someone's schedule, so a day or two
+# is normal and only a longer silence is a finding.
 GRACE_DAYS = 2
 
 # How far past the window to look for settlements. A payment on the last day of
@@ -209,13 +219,30 @@ def _classify(row: dict, today: date, batch_merchants: set[str]) -> tuple[str, s
         return "batch_merchant", (
             "Settled in batches, not per payment — reconciled on totals below."
         )
-    if age <= GRACE_DAYS:
+    # Real-time merchants settle in seconds, so measure their wait in hours.
+    when = row.get("txn_date_time")
+    hours = None
+    if when is not None:
+        try:
+            hours = (datetime.now() - when).total_seconds() / 3600
+        except TypeError:
+            hours = None
+
+    if hours is not None and hours <= REALTIME_GRACE_HOURS:
         return "awaiting_settlement", (
-            f"No settlement yet, {age} day{'' if age == 1 else 's'} old — still within normal time."
+            f"No settlement yet, {int(hours * 60)} minutes old — real-time settlement "
+            "normally lands within a minute, so give it a little longer."
         )
+
+    waited = (
+        f"{hours / 24:.1f} days" if hours is not None and hours >= 24
+        else f"{hours:.1f} hours" if hours is not None
+        else f"{age} days"
+    )
     return "not_in_settlement_report", (
-        f"{age} days old with no settlement record at all. "
-        "The payment is in the transaction report but nothing was ever raised to pay it out."
+        f"No settlement was ever raised for this payment — {waited} and counting. "
+        "This merchant settles in real time, which normally completes within a "
+        "minute, so the money is sitting with SCT rather than on its way."
     )
 
 
