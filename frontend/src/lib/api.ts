@@ -514,6 +514,26 @@ function issuerAcquirerForm(txnFile: File, settlementFile?: File | null) {
 }
 
 export const issuerAcquirerApi = {
+  /** Issuing and acquiring for a date range, read from the switch. */
+  analyzeRange: (from: string, to: string) =>
+    request<IssuerAcquirerData>(
+      `/issuer-acquirer?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
+    ),
+
+  downloadRangeReport: async (from: string, to: string) => {
+    const url =
+      `/api/issuer-acquirer/report?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Report failed (${res.status})`);
+    const blob = await res.blob();
+    const href = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = href;
+    a.download = `issuer_acquirer_${from}_to_${to}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(href);
+  },
+
   analyze: async (txnFile: File, settlementFile?: File | null): Promise<IssuerAcquirerData> => {
     const res = await fetch("/api/issuer-acquirer/analyze", {
       method: "POST",

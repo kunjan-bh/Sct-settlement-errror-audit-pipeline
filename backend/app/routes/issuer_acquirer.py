@@ -9,19 +9,26 @@ removed, exactly like Document Analysis. See
 services/issuer_acquirer_service.py for what the numbers mean.
 """
 import io
+from datetime import date
 import os
 import uuid
 from contextlib import contextmanager
 
 from flask import Blueprint, current_app, jsonify, request, send_file
 
-from app.services.issuer_acquirer_service import build_issuer_acquirer
+from app.services.issuer_acquirer_service import (
+    build_issuer_acquirer,
+    build_issuer_acquirer_from_range,
+)
 from app.services.report_generator import generate_issuer_acquirer_report_bytes
 from app.services.transaction_reconcile import TXN_ALLOWED_EXTENSIONS
 
 issuer_acquirer_bp = Blueprint("issuer_acquirer", __name__, url_prefix="/api/issuer-acquirer")
 
 SETTLEMENT_EXTENSIONS = {".xlsx", ".xls"}
+
+# Both sides are aggregates, so a range is cheap -- but not unbounded.
+MAX_RANGE_DAYS = 31
 
 
 class _BadUpload(Exception):
@@ -115,4 +122,58 @@ def report():
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         as_attachment=True,
         download_name="Issuer_Acquirer_Reconciliation.xlsx",
+    )
+
+
+def _range_from_args():
+    """from/to as inclusive dates."""
+    raw_from = (request.args.get("from") or "").strip()
+    raw_to = (request.args.get("to") or "").strip()
+    try:
+        d_from = date.fromisoformat(raw_from)
+        d_to = date.fromisoformat(raw_to)
+    except ValueError:
+        raise ValueError("'from' and 'to' must be dates as YYYY-MM-DD.")
+    if d_from > d_to:
+        raise ValueError("'from' is after 'to'.")
+    if (d_to - d_from).days + 1 > MAX_RANGE_DAYS:
+        raise ValueError(f"Range is longer than {MAX_RANGE_DAYS} days.")
+    return d_from, d_to
+
+
+@issuer_acquirer_bp.get("")
+def analyze_range():
+    """Issuing and acquiring for a date range, read from the switch."""
+    try:
+        d_from, d_to = _range_from_args()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    try:
+        return jsonify(build_issuer_acquirer_from_range(d_from, d_to))
+    except Exception as exc:  # noqa: BLE001 - the switch being down is normal
+        return jsonify({
+            "error": f"Could not read the switch: {str(exc).strip().splitlines()[0][:300]}"
+        }), 502
+
+
+@issuer_acquirer_bp.get("/report")
+def report_range():
+    """The same analysis as a workbook."""
+    try:
+        d_from, d_to = _range_from_args()
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    try:
+        data = build_issuer_acquirer_from_range(d_from, d_to)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({
+            "error": f"Could not read the switch: {str(exc).strip().splitlines()[0][:300]}"
+        }), 502
+
+    xlsx = generate_issuer_acquirer_report_bytes(data, {})
+    return send_file(
+        io.BytesIO(xlsx),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=f"issuer_acquirer_{d_from}_to_{d_to}.xlsx",
     )

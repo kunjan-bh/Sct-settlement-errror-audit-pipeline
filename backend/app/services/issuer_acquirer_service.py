@@ -174,3 +174,117 @@ def build_issuer_acquirer(txn_path: str, settle_path: str | None = None) -> dict
         "issuing": issuing,
         "acquiring": acquiring,
     }
+
+
+# --- straight from the switch ------------------------------------------------
+#
+# The upload version reconciles whatever two files someone happens to have.
+# This one asks the database the files came from, so a date is all it needs and
+# the two sides always cover the same window -- which is where most of the
+# spurious variance in the file version came from.
+
+_ISSUING_SQL = """
+SELECT issuer_institution_name AS name, count(*) AS c, sum(txn_amount) AS amount
+FROM operators.transactions
+WHERE txn_date BETWEEN %(date_from)s AND %(date_to)s
+  AND payment_status = 'SUCCESS'
+GROUP BY 1
+"""
+
+_ACQUIRING_SQL = """
+SELECT institution_name AS name, count(*) AS c, sum(txn_amount) AS amount
+FROM operators.transactions
+WHERE txn_date BETWEEN %(date_from)s AND %(date_to)s
+  AND payment_status = 'SUCCESS'
+GROUP BY 1
+"""
+
+_SETTLED_BY_ACQUIRER_SQL = """
+SELECT acquirer_name AS name, count(*) AS c, sum(amount) AS amount
+FROM operators.fund_transfer_logs
+WHERE date BETWEEN %(date_from)s AND %(date_to)s
+  AND status = 'SUCCESS'
+GROUP BY 1
+"""
+
+
+def _to_float(v) -> float:
+    if v is None:
+        return 0.0
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def build_issuer_acquirer_from_range(date_from, date_to) -> dict:
+    """
+    Issuing and acquiring volumes for a date range, read from the switch.
+
+    Same shape as build_issuer_acquirer so the page and the report do not care
+    which way the data arrived.
+
+    Only successful payments count. An issuing volume that included declines
+    would not be a volume anyone can act on, and the settlement side has no
+    equivalent to compare it against.
+    """
+    from app.services.core_db import run_query
+
+    params = {"date_from": str(date_from), "date_to": str(date_to)}
+    issuing_rows = run_query(_ISSUING_SQL, params)
+    acquiring_rows = run_query(_ACQUIRING_SQL, params)
+    settled_rows = run_query(_SETTLED_BY_ACQUIRER_SQL, params)
+
+    txn_count = sum(int(r["c"] or 0) for r in issuing_rows)
+    txn_total = sum(_to_float(r["amount"]) for r in issuing_rows)
+
+    issuing = _rows_from(
+        {(r["name"] or UNKNOWN): (int(r["c"] or 0), _to_float(r["amount"])) for r in issuing_rows},
+        "txn_count", "txn_amount", txn_total,
+    )
+
+    acquiring_txn = {
+        (r["name"] or UNKNOWN): (int(r["c"] or 0), _to_float(r["amount"]))
+        for r in acquiring_rows
+    }
+    settled_by_acquirer = {
+        (r["name"] or UNKNOWN): (int(r["c"] or 0), _to_float(r["amount"]))
+        for r in settled_rows
+    }
+    settled_count = sum(c for c, _a in settled_by_acquirer.values())
+    settled_total = sum(a for _c, a in settled_by_acquirer.values())
+
+    acquiring = []
+    for name in set(acquiring_txn) | set(settled_by_acquirer):
+        t_count, t_amount = acquiring_txn.get(name, (0, 0.0))
+        s_count, s_amount = settled_by_acquirer.get(name, (0, 0.0))
+        acquiring.append({
+            "name": name,
+            "txn_count": t_count,
+            "txn_amount": round(t_amount, 2),
+            "settled_count": s_count,
+            "settled_amount": round(s_amount, 2),
+            # Positive means more was taken than paid out -- still owed. Both
+            # sides cover the same days here, so unlike the file version a
+            # variance is a real difference rather than two mismatched windows.
+            "variance_amount": round(t_amount - s_amount, 2),
+            "variance_count": t_count - s_count,
+        })
+    acquiring.sort(key=lambda r: -max(r["txn_amount"], r["settled_amount"]))
+
+    return {
+        "totals": {
+            "txn_rows": txn_count,
+            "txn_amount": round(txn_total, 2),
+            "settlement_rows": sum(c for c, _a in settled_by_acquirer.values()),
+            "settled_count": settled_count,
+            "settled_amount": round(settled_total, 2),
+            "variance_amount": round(txn_total - settled_total, 2),
+            "variance_count": txn_count - settled_count,
+            "settled_pct": round(settled_total * 100.0 / txn_total, 2) if txn_total else 0.0,
+            "window": f"{date_from} to {date_to}",
+            "has_settlement": True,
+        },
+        "issuing": issuing,
+        "acquiring": acquiring,
+    }
