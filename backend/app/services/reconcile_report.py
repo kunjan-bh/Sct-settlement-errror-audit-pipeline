@@ -32,6 +32,29 @@ _BORDER = Border(left=_THIN, right=_THIN, top=_THIN, bottom=_THIN)
 _MONEY = "#,##0.00"
 
 # (header, key, width, is_money) for a per-payment sheet.
+_FINDING_LABEL = {
+    "not_in_settlement_report": "Never raised for payment",
+    "settlement_failed": "Settlement failed",
+    "awaiting_settlement": "Awaiting settlement",
+    "settled_later": "Settled later",
+    "settled": "Settled",
+    "batch_merchant": "Batch-settled merchant",
+}
+
+_EXCEPTION_COLUMNS = [
+    ("Finding", "_finding", 24, False),
+    ("MID", "mid", 19, False),
+    ("Merchant", "merchant", 24, False),
+    ("Aggregator", "partner", 18, False),
+    ("Txn CRRN", "crrn", 15, False),
+    ("Txn amount", "txn_amount", 14, True),
+    ("Txn date", "txn_date_time", 19, False),
+    ("Settlement status", "settle_status", 16, False),
+    ("Hold balance", "hold_balance", 13, True),
+    ("Total balance", "total_balance", 13, True),
+    ("Why", "why", 60, False),
+]
+
 _TXN_COLUMNS = [
     ("MID", "mid", 19, False),
     ("Merchant", "merchant", 24, False),
@@ -161,9 +184,18 @@ def generate_reconcile_xlsx(data: dict, generated_at: str) -> bytes:
 
     # --- Sheet 2: exceptions -----------------------------------------------
     ex = wb.create_sheet("Exceptions")
-    ex["A1"] = f"Exceptions — {t['exceptions']:,} payments needing attention"
+    ex["A1"] = f"Exceptions — {t['exceptions']:,} payments that have not reached the merchant"
     ex["A1"].font = _TITLE
-    _write_table(ex, _TXN_COLUMNS, data.get("exceptions", []), start_row=3)
+    ex["A2"] = (
+        "Money still owed, worst first. Settlements that failed and then went out on a "
+        "retry are not here — they are on the Settled later sheet, since they need "
+        "nothing done about them."
+    )
+    rows = [
+        {**x, "_finding": _FINDING_LABEL.get(x.get("bucket"), x.get("bucket"))}
+        for x in data.get("exceptions", [])
+    ]
+    _write_table(ex, _EXCEPTION_COLUMNS, rows, start_row=4)
 
     # --- A sheet per finding ------------------------------------------------
     for key, title, fill in _BUCKET_SHEETS:

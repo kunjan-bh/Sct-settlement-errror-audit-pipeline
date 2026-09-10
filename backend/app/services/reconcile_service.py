@@ -403,14 +403,26 @@ def build_reconciliation(
     def amount_of(name: str) -> float:
         return round(sum(x["txn_amount"] for x in buckets.get(name, [])), 2)
 
-    # Exceptions are everything that is not simply done: the report someone
-    # actually has to act on.
-    exception_buckets = (
-        "not_in_settlement_report", "settlement_failed",
-        "awaiting_settlement", "settled_later",
-    )
-    exceptions = [x for name in exception_buckets for x in buckets.get(name, [])]
-    exceptions.sort(key=lambda x: -x["txn_amount"])
+    # The exception report is what someone has to act on, so it holds only
+    # money that has not reached the merchant.
+    #
+    # It used to include settled_later as well, which meant 137 already-resolved
+    # payments sat on top of the 7 that mattered -- the report was ten times its
+    # useful size and the real findings were invisible in it. A settlement that
+    # failed and then went out on a retry is a fact about the day, not a task,
+    # and it has its own sheet for anyone who wants to see it.
+    #
+    # Ordered by severity, not amount: "nothing was ever raised to pay this"
+    # outranks a large payment that is merely a day late.
+    _SEVERITY = {
+        "not_in_settlement_report": 0,
+        "settlement_failed": 1,
+        "awaiting_settlement": 2,
+    }
+    exceptions = [
+        x for name in _SEVERITY for x in buckets.get(name, [])
+    ]
+    exceptions.sort(key=lambda x: (_SEVERITY[x["bucket"]], -x["txn_amount"]))
 
     return {
         "range": {"from": str(d_from), "to": str(d_to)},
