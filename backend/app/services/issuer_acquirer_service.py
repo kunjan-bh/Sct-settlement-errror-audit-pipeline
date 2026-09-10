@@ -183,29 +183,26 @@ def build_issuer_acquirer(txn_path: str, settle_path: str | None = None) -> dict
 # the two sides always cover the same window -- which is where most of the
 # spurious variance in the file version came from.
 
-_ISSUING_SQL = """
-SELECT issuer_institution_name AS name, count(*) AS c, sum(txn_amount) AS amount
+# Both sides are pulled once and everything derived in Python. Separate GROUP
+# BYs would each re-scan the same two tables, and explaining a variance needs
+# the row-level ref_id link anyway.
+_TXN_SQL = """
+SELECT network_txn_id, institution_name, issuer_institution_name, txn_amount,
+       is_real_time_merchant_settled AS real_time, merchant_code
 FROM operators.transactions
 WHERE txn_date BETWEEN %(date_from)s AND %(date_to)s
   AND payment_status = 'SUCCESS'
-GROUP BY 1
 """
 
-_ACQUIRING_SQL = """
-SELECT institution_name AS name, count(*) AS c, sum(txn_amount) AS amount
-FROM operators.transactions
-WHERE txn_date BETWEEN %(date_from)s AND %(date_to)s
-  AND payment_status = 'SUCCESS'
-GROUP BY 1
-"""
-
-_SETTLED_BY_ACQUIRER_SQL = """
-SELECT acquirer_name AS name, count(*) AS c, sum(amount) AS amount
+_SETTLE_SQL = """
+SELECT ref_id, acquirer_name, amount, status, date
 FROM operators.fund_transfer_logs
-WHERE date BETWEEN %(date_from)s AND %(date_to)s
-  AND status = 'SUCCESS'
-GROUP BY 1
+WHERE date BETWEEN %(date_from)s AND %(settle_to)s
 """
+
+# A settlement raised a day or two after the payment is normal, so the
+# settlement side reaches past the window being reported on.
+_LOOKAHEAD_DAYS = 3
 
 
 def _to_float(v) -> float:
@@ -217,73 +214,211 @@ def _to_float(v) -> float:
         return 0.0
 
 
+def _explain(variance, failed_amt, earlier_amt, missing_amt):
+    """
+    (code, sentence) for one acquirer's variance.
+
+    Nobody is going to write three hundred reasons by hand, and they would be
+    the same three sentences every time. The switch already knows which one
+    applies: a positive gap is settlements that failed or have not gone out
+    yet, a negative one is earlier days' settlements landing in this window.
+
+    What neither explains is a payment with no settlement raised at all. That
+    is a settlement entry genuinely missing rather than late, so it is called
+    out separately and sorts to the top.
+    """
+    if abs(variance) < 0.01 and missing_amt < 0.01:
+        return "balanced", "Settled in full."
+
+    parts = []
+    if missing_amt >= 0.01:
+        parts.append(
+            "NPR {:,.2f} of payments have no settlement entry at all - nothing was "
+            "ever raised to pay them out".format(missing_amt)
+        )
+    if variance > 0:
+        parts.append(
+            "NPR {:,.2f} of settlements were raised but failed or are still pending".format(failed_amt)
+            if failed_amt >= 0.01
+            else "payments taken have not been settled yet"
+        )
+    elif variance < 0:
+        parts.append(
+            "NPR {:,.2f} settled here belongs to payments from earlier days".format(earlier_amt)
+            if earlier_amt >= 0.01
+            else "more was settled than taken here, so it covers earlier days"
+        )
+
+    code = (
+        "missing_entries" if missing_amt >= 0.01
+        else "pending_settlement" if variance > 0
+        else "earlier_days"
+    )
+    sentence = "; ".join(parts)
+    return code, sentence[:1].upper() + sentence[1:] + "."
+
+
 def build_issuer_acquirer_from_range(date_from, date_to) -> dict:
     """
-    Issuing and acquiring volumes for a date range, read from the switch.
+    Issuing and acquiring volumes for a date range, read from the switch, each
+    acquirer's variance explained from the data rather than typed by hand.
 
     Same shape as build_issuer_acquirer so the page and the report do not care
     which way the data arrived.
 
-    Only successful payments count. An issuing volume that included declines
-    would not be a volume anyone can act on, and the settlement side has no
-    equivalent to compare it against.
+    Only successful payments count. An issuing volume including declines is not
+    one anyone can act on, and the settlement side has no equivalent to compare
+    it against.
     """
+    from datetime import timedelta
+
     from app.services.core_db import run_query
 
-    params = {"date_from": str(date_from), "date_to": str(date_to)}
-    issuing_rows = run_query(_ISSUING_SQL, params)
-    acquiring_rows = run_query(_ACQUIRING_SQL, params)
-    settled_rows = run_query(_SETTLED_BY_ACQUIRER_SQL, params)
+    params = {
+        "date_from": str(date_from),
+        "date_to": str(date_to),
+        "settle_to": str(date_to + timedelta(days=_LOOKAHEAD_DAYS)),
+    }
+    payments = run_query(_TXN_SQL, params)
+    settlements = run_query(_SETTLE_SQL, params)
 
-    txn_count = sum(int(r["c"] or 0) for r in issuing_rows)
-    txn_total = sum(_to_float(r["amount"]) for r in issuing_rows)
-
+    # --- issuing -----------------------------------------------------------
+    issuing_acc = {}
+    txn_total = 0.0
+    for p in payments:
+        amount = _to_float(p.get("txn_amount"))
+        txn_total += amount
+        e = issuing_acc.setdefault(p.get("issuer_institution_name") or UNKNOWN, [0, 0.0])
+        e[0] += 1
+        e[1] += amount
     issuing = _rows_from(
-        {(r["name"] or UNKNOWN): (int(r["c"] or 0), _to_float(r["amount"])) for r in issuing_rows},
+        {k: (v[0], v[1]) for k, v in issuing_acc.items()},
         "txn_count", "txn_amount", txn_total,
     )
 
-    acquiring_txn = {
-        (r["name"] or UNKNOWN): (int(r["c"] or 0), _to_float(r["amount"]))
-        for r in acquiring_rows
+    # --- acquiring ---------------------------------------------------------
+    acq_txn = {}
+    payment_of = {}
+    for p in payments:
+        name = p.get("institution_name") or UNKNOWN
+        amount = _to_float(p.get("txn_amount"))
+        e = acq_txn.setdefault(name, [0, 0.0])
+        e[0] += 1
+        e[1] += amount
+        ref = p.get("network_txn_id")
+        if ref:
+            payment_of[ref] = (name, amount, p.get("merchant_code") or "")
+
+    settled, failed, earlier = {}, {}, {}
+    matched, seen = set(), set()
+    window_to = str(date_to)
+    for s in settlements:
+        name = s.get("acquirer_name") or UNKNOWN
+        amount = _to_float(s.get("amount"))
+        ref = s.get("ref_id")
+        succeeded = (s.get("status") or "").upper() == "SUCCESS"
+
+        # The lookahead days exist so a payment settled tomorrow still counts
+        # as settled. They must not be added to this window's totals, or the
+        # settled side covers more days than the payments it is compared with
+        # -- which reported 31,048 settlements against 15,038 payments and made
+        # every acquirer look enormously over-settled.
+        #
+        # `seen` is any settlement entry at all, whatever its status; `matched`
+        # is one that succeeded. A settlement that failed is a failed
+        # settlement, not a missing entry -- an entry exists, it just did not
+        # go through, and telling an acquirer nothing was ever raised for it
+        # would be wrong.
+        if ref and ref in payment_of:
+            seen.add(ref)
+            if succeeded:
+                matched.add(ref)
+        if str(s.get("date") or "") > window_to:
+            continue
+
+        if succeeded:
+            e = settled.setdefault(name, [0, 0.0])
+            e[0] += 1
+            e[1] += amount
+            if ref and ref not in payment_of:
+                # Paid out here, for a payment this window does not contain.
+                e2 = earlier.setdefault(name, [0, 0.0])
+                e2[0] += 1
+                e2[1] += amount
+        else:
+            e3 = failed.setdefault(name, [0, 0.0])
+            e3[0] += 1
+            e3[1] += amount
+
+    # Payments with no settlement raised at all.
+    #
+    # Batch-settled merchants are left out: they have no per-payment settlement
+    # by design, so counting them here would report NPR 3.7m of missing entries
+    # that were never missing. A merchant counts as batch-settled only when
+    # none of their payments settle in real time -- the flag is per payment and
+    # does sometimes disagree with the merchant's own behaviour.
+    realtime_mids = {
+        (p.get("merchant_code") or "") for p in payments if p.get("real_time")
     }
-    settled_by_acquirer = {
-        (r["name"] or UNKNOWN): (int(r["c"] or 0), _to_float(r["amount"]))
-        for r in settled_rows
-    }
-    settled_count = sum(c for c, _a in settled_by_acquirer.values())
-    settled_total = sum(a for _c, a in settled_by_acquirer.values())
+    missing = {}
+    for ref, (name, amount, mid) in payment_of.items():
+        # Missing means no entry of any status was ever raised.
+        if ref in seen or mid not in realtime_mids:
+            continue
+        e = missing.setdefault(name, [0, 0.0])
+        e[0] += 1
+        e[1] += amount
+
+    settled_count = sum(v[0] for v in settled.values())
+    settled_total = sum(v[1] for v in settled.values())
 
     acquiring = []
-    for name in set(acquiring_txn) | set(settled_by_acquirer):
-        t_count, t_amount = acquiring_txn.get(name, (0, 0.0))
-        s_count, s_amount = settled_by_acquirer.get(name, (0, 0.0))
+    for name in set(acq_txn) | set(settled):
+        t_count, t_amount = acq_txn.get(name, [0, 0.0])
+        s_count, s_amount = settled.get(name, [0, 0.0])
+        variance = round(t_amount - s_amount, 2)
+        f_count, f_amount = failed.get(name, [0, 0.0])
+        _ec, e_amount = earlier.get(name, [0, 0.0])
+        m_count, m_amount = missing.get(name, [0, 0.0])
+        code, why = _explain(variance, f_amount, e_amount, m_amount)
         acquiring.append({
             "name": name,
             "txn_count": t_count,
             "txn_amount": round(t_amount, 2),
             "settled_count": s_count,
             "settled_amount": round(s_amount, 2),
-            # Positive means more was taken than paid out -- still owed. Both
-            # sides cover the same days here, so unlike the file version a
-            # variance is a real difference rather than two mismatched windows.
-            "variance_amount": round(t_amount - s_amount, 2),
+            "variance_amount": variance,
             "variance_count": t_count - s_count,
+            "failed_settlements": f_count,
+            "failed_amount": round(f_amount, 2),
+            "earlier_days_amount": round(e_amount, 2),
+            "missing_count": m_count,
+            "missing_amount": round(m_amount, 2),
+            "reason_code": code,
+            "reason": why,
         })
-    acquiring.sort(key=lambda r: -max(r["txn_amount"], r["settled_amount"]))
+
+    # Missing entries first: they are the only kind the data cannot explain
+    # away, so they should not be buried under the biggest acquirers.
+    acquiring.sort(key=lambda r: (
+        r["reason_code"] != "missing_entries",
+        -max(r["txn_amount"], r["settled_amount"]),
+    ))
 
     return {
         "totals": {
-            "txn_rows": txn_count,
+            "txn_rows": len(payments),
             "txn_amount": round(txn_total, 2),
-            "settlement_rows": sum(c for c, _a in settled_by_acquirer.values()),
+            "settlement_rows": settled_count,
             "settled_count": settled_count,
             "settled_amount": round(settled_total, 2),
             "variance_amount": round(txn_total - settled_total, 2),
-            "variance_count": txn_count - settled_count,
+            "variance_count": len(payments) - settled_count,
             "settled_pct": round(settled_total * 100.0 / txn_total, 2) if txn_total else 0.0,
-            "window": f"{date_from} to {date_to}",
+            "window": "{} to {}".format(date_from, date_to),
             "has_settlement": True,
+            "missing_entries": sum(v[0] for v in missing.values()),
+            "missing_amount": round(sum(v[1] for v in missing.values()), 2),
         },
         "issuing": issuing,
         "acquiring": acquiring,

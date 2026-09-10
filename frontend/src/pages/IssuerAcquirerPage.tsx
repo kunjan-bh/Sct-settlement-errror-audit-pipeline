@@ -67,7 +67,7 @@ export default function IssuerAcquirerPage() {
   const handleDownload = async () => {
     setDownloading(true);
     try {
-      await issuerAcquirerApi.downloadRangeReport(from, to);
+      await issuerAcquirerApi.downloadRangeReport(from, to, reasons);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Failed to download report");
     } finally {
@@ -220,8 +220,10 @@ export default function IssuerAcquirerPage() {
             <div className="px-5 pt-5 pb-3">
               <h2 className="text-sm font-semibold text-neutral-900">Acquiring</h2>
               <p className="text-neutral-500 text-xs mt-1">
-                Positive variance is transacted but not yet settled. Write why it differs — the
-                reason travels into the downloaded report.
+                The reason for each variance is worked out from the switch: a positive gap is
+                settlements raised but not yet through, a negative one is earlier days' settlements
+                landing here. A payment with no settlement entry at all is the only kind neither
+                explains, so those sort to the top. Add a note only where you disagree.
               </p>
             </div>
             <div className="overflow-x-auto">
@@ -258,16 +260,32 @@ export default function IssuerAcquirerPage() {
                         {amt.format(r.variance_amount)}
                       </td>
                       <td className="px-5 py-2">
-                        <input
-                          value={reasons[r.name] ?? ""}
-                          placeholder={
-                            Math.abs(r.variance_amount) < 0.005 ? "—" : "why does it differ?"
-                          }
-                          onChange={(e) =>
-                            setReasons((prev) => ({ ...prev, [r.name]: e.target.value }))
-                          }
-                          className="w-full border border-neutral-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-neutral-400"
-                        />
+                        <div className="flex items-start gap-2">
+                          {r.reason_code === "missing_entries" && (
+                            <span className="shrink-0 mt-0.5 text-[10px] font-semibold text-red-800 bg-red-50 border border-red-200 rounded px-1.5 py-0.5">
+                              no entry
+                            </span>
+                          )}
+                          <div className="min-w-0">
+                            <p className={`text-xs leading-relaxed ${
+                              r.reason_code === "missing_entries" ? "text-red-900" : "text-neutral-600"
+                            }`}>
+                              {r.reason}
+                            </p>
+                            {/* Only for the case the data cannot explain. Three
+                                hundred acquirers is far too many to type a
+                                reason for, and they would be the same three
+                                sentences the switch already knows. */}
+                            <input
+                              value={reasons[r.name] ?? ""}
+                              placeholder="add a note (optional)"
+                              onChange={(e) =>
+                                setReasons((prev) => ({ ...prev, [r.name]: e.target.value }))
+                              }
+                              className="w-full mt-1 border border-neutral-200 rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-neutral-400"
+                            />
+                          </div>
+                        </div>
                       </td>
                     </tr>
                   ))}

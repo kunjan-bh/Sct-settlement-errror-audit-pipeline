@@ -156,9 +156,15 @@ def analyze_range():
         }), 502
 
 
-@issuer_acquirer_bp.get("/report")
+@issuer_acquirer_bp.route("/range-report", methods=["GET", "POST"])
 def report_range():
-    """The same analysis as a workbook."""
+    """
+    The same analysis as a workbook.
+
+    POST carries the operator's notes. Every acquirer they did not annotate
+    gets the reason the data implies, so the report explains all three hundred
+    rather than the handful somebody had time to type.
+    """
     try:
         d_from, d_to = _range_from_args()
     except ValueError as exc:
@@ -170,7 +176,12 @@ def report_range():
             "error": f"Could not read the switch: {str(exc).strip().splitlines()[0][:300]}"
         }), 502
 
-    xlsx = generate_issuer_acquirer_report_bytes(data, {})
+    notes = ((request.get_json(silent=True) or {}).get("reasons") or {})         if request.method == "POST" else {}
+    reasons = {
+        r["name"]: (notes.get(r["name"]) or r.get("reason") or "")
+        for r in data.get("acquiring", [])
+    }
+    xlsx = generate_issuer_acquirer_report_bytes(data, reasons)
     return send_file(
         io.BytesIO(xlsx),
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

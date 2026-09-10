@@ -478,6 +478,14 @@ export type IssuingRow = {
 };
 
 export type AcquiringRow = {
+  /** Worked out from the switch rather than typed by hand. */
+  reason?: string;
+  reason_code?: "balanced" | "pending_settlement" | "earlier_days" | "missing_entries";
+  failed_settlements?: number;
+  failed_amount?: number;
+  earlier_days_amount?: number;
+  missing_count?: number;
+  missing_amount?: number;
   name: string;
   txn_count: number;
   txn_amount: number;
@@ -522,10 +530,18 @@ export const issuerAcquirerApi = {
       `/issuer-acquirer?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
     ),
 
-  downloadRangeReport: async (from: string, to: string) => {
+  downloadRangeReport: async (
+    from: string, to: string, reasons: Record<string, string> = {}
+  ) => {
     const url =
-      `/api/issuer-acquirer/report?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-    const res = await fetch(url);
+      `/api/issuer-acquirer/range-report?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+    // POST so the operator's notes travel with it; the derived reason is
+    // filled in server-side for every acquirer they did not annotate.
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reasons }),
+    });
     if (!res.ok) throw new Error(`Report failed (${res.status})`);
     const blob = await res.blob();
     const href = URL.createObjectURL(blob);
