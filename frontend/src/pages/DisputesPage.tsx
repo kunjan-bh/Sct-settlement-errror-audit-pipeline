@@ -474,13 +474,40 @@ export default function DisputesPage() {
     }
   };
 
+  // Everything on the page, after the aggregator and search filters but before
+  // the tab. Counts come from here so a tab can never claim rows the list
+  // below is not showing: filtering to an aggregator with no open disputes
+  // used to leave "Disputes (5)" above an empty list.
+  const visible = useMemo(() => {
+    const live = (data?.disputes ?? []).filter(isListed);
+    const scoped = entity ? live.filter((d) => d.mapped_partner === entity) : live;
+    const q = search.trim().toLowerCase();
+    if (!q) return scoped;
+    return scoped.filter((d) =>
+      [d.mid, d.crrn, d.merchant_name, d.reason, d.mapped_partner, d.bank_or_wallet, d.creditor_account]
+        .some((v) => (v || "").toString().toLowerCase().includes(q))
+    );
+  }, [data, entity, search]);
+
+  const counts = useMemo(() => {
+    const n = (s: string) => visible.filter((d) => d.op_status === s).length;
+    return {
+      open: n("pending"),
+      in_progress: n("in_progress"),
+      solved: n("solved"),
+      excluded: n("exclude"),
+      risk: visible.filter(
+        (d) => d.double_pay_risk && (d.op_status === "pending" || d.op_status === "in_progress")
+      ).length,
+    };
+  }, [visible]);
+
   const rows = useMemo(() => {
-    const all = data?.disputes ?? [];
-    const live = all.filter(isListed);
+    const live = visible;
     // One tab per decision. Acting on a dispute moves it out of Disputes and
     // into its section -- Disputes is what is left to do, not a list of
     // everything with the done ones still sitting in it.
-    const base =
+    return (
       filter === "open" ? live.filter((d) => d.op_status === "pending")
         : filter === "in_progress" ? live.filter((d) => d.op_status === "in_progress")
           : filter === "solved" ? live.filter((d) => d.op_status === "solved")
@@ -488,15 +515,9 @@ export default function DisputesPage() {
               : live.filter(
                   (d) => d.double_pay_risk &&
                          (d.op_status === "pending" || d.op_status === "in_progress")
-                );
-    const scoped = entity ? base.filter((d) => d.mapped_partner === entity) : base;
-    const q = search.trim().toLowerCase();
-    if (!q) return scoped;
-    return scoped.filter((d) =>
-      [d.mid, d.crrn, d.merchant_name, d.reason, d.mapped_partner, d.bank_or_wallet, d.creditor_account]
-        .some((v) => (v || "").toString().toLowerCase().includes(q))
+                )
     );
-  }, [data, filter, search, entity]);
+  }, [visible, filter]);
 
   const toggle = (key: string) =>
     setOpen((prev) => {
@@ -688,11 +709,11 @@ export default function DisputesPage() {
 
       <div className="flex gap-1 border-b border-neutral-200">
         {([
-          ["open", `Disputes${t ? ` (${t.pending_count})` : ""}`],
-          ["risk", `Double-pay risk${t ? ` (${t.at_risk_count})` : ""}`],
-          ["in_progress", `In Progress${t ? ` (${t.in_progress_count})` : ""}`],
-          ["solved", `Solved${t ? ` (${t.solved_count})` : ""}`],
-          ["excluded", `Excluded${t ? ` (${t.row_excluded_count})` : ""}`],
+          ["open", `Disputes (${counts.open})`],
+          ["risk", `Double-pay risk (${counts.risk})`],
+          ["in_progress", `In Progress (${counts.in_progress})`],
+          ["solved", `Solved (${counts.solved})`],
+          ["excluded", `Excluded (${counts.excluded})`],
         ] as [Filter, string][]).map(([key, label]) => (
           <button key={key} type="button" onClick={() => setFilter(key)}
             className={`px-3.5 py-2 text-xs font-semibold border-b-2 -mb-px transition-colors cursor-pointer ${
@@ -704,6 +725,17 @@ export default function DisputesPage() {
           </button>
         ))}
       </div>
+
+      {entity && (
+        <p className="text-[11px] text-neutral-500 -mt-2">
+          Showing <span className="font-semibold text-neutral-700">{entity}</span> only — the
+          counts above describe this aggregator.{" "}
+          <button type="button" onClick={() => setEntity("")}
+            className="underline underline-offset-2 hover:text-neutral-900 cursor-pointer">
+            Show all
+          </button>
+        </p>
+      )}
 
       {t && !!(t.reprocessed_count + t.likely_settled_count + t.settled_clear_count + t.excluded_count) && (
         <p className="text-[11px] text-neutral-400 -mt-2">
