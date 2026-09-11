@@ -240,16 +240,21 @@ def _allocate_holds(disputes: list[dict]) -> None:
         by_mid.setdefault(d["mid"], []).append(d)
 
     for rows in by_mid.values():
-        # Excluded and already-reprocessed rows do not consume the pot; they
-        # are not being chased.
+        # Excluded rows do not consume the pot -- they are not being chased.
+        #
+        # Reprocessed ones DO. "Reprocessed" is inferred from a later success
+        # for the same merchant and amount, and two settlements of the same
+        # size on one day are common: MID 008000001384524 had a PENDING 2,500
+        # at 07:19 and a SUCCESS 2,500 at 07:25, and was ruled out -- while
+        # still holding the 2,500. The balance is the harder evidence, so it
+        # gets to overrule the guess.
         live = [
             d for d in rows
-            if not d["reprocessed_ok"]
             # Entity-level exclusions (a whole wallet) drop out entirely. A
             # row someone excluded by hand still holds money, so it still
             # consumes the pot and still gets its flags -- it belongs in the
             # Excluded section, not nowhere.
-            and not (d["op_status"] == "exclude" and d["op_scope"])
+            if not (d["op_status"] == "exclude" and d["op_scope"])
         ]
         for d in rows:
             d.setdefault("held", False)
@@ -432,6 +437,17 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
         })
 
     _allocate_holds(disputes)
+
+    # The balance overrules the reprocess guess. If the hold still reaches a
+    # settlement, the money is on the merchant whatever a later same-amount
+    # success suggests, so it goes back on the list.
+    for d in disputes:
+        if d["reprocessed_ok"] and (d["held"] or d["partially_held"]):
+            d["reprocessed_ok"] = False
+            d["why_listed"] = (
+                "A later settlement of the same amount suggested this was "
+                "reprocessed, but the merchant is still holding the money."
+            )
 
     # Excluded and already-reprocessed settlements are not outstanding work:
     # one was judged not ours to chase, the other already went through. Both
