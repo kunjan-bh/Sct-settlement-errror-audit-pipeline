@@ -46,12 +46,15 @@ def entity_settlement_rows(
         r for r in build_settlement_type_mid_rows(date_from, date_to)
         if r["entity"] == entity and r["settlement_type"] in types
     ]
-    rows.sort(key=lambda r: (r.get("date") or "", -(r.get("amount") or 0)))
+    rows.sort(key=lambda r: (r.get("date_time") or r.get("date") or "", -(r.get("amount") or 0)))
     return rows
 
 
 _COLUMNS = (
-    ("Date", "date", "left"),
+    # Full timestamp, not just the day. An aggregator matching these against
+    # their own log needs the time to tell apart several settlements for the
+    # same merchant on the same date.
+    ("Date & time", "date_time", "left"),
     ("MID", "mid", "left"),
     ("Merchant", "merchant_name", "left"),
     ("CRRN", "crrn", "left"),
