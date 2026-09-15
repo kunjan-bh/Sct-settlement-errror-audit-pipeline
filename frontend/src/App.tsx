@@ -9,6 +9,7 @@ import SettingsPage from "./pages/SettingsPage";
 import IssuerAcquirerPage from "./pages/IssuerAcquirerPage";
 import DisputesPage from "./pages/DisputesPage";
 import ReconcilePage from "./pages/ReconcilePage";
+import AddTerminalPage from "./pages/AddTerminalPage";
 
 function App() {
   return (
@@ -26,6 +27,7 @@ function App() {
           <Route path="/issuer-acquirer" element={<IssuerAcquirerPage />} />
           <Route path="/disputes" element={<DisputesPage />} />
           <Route path="/reconcile" element={<ReconcilePage />} />
+          <Route path="/smart-withdrawal/add-terminal" element={<AddTerminalPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       </Routes>

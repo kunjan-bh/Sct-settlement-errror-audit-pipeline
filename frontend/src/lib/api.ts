@@ -1042,3 +1042,33 @@ export const environmentApi = {
       body: JSON.stringify({ environment }),
     }),
 };
+
+// --- Adding terminals -------------------------------------------------------
+// The one part of the app that writes to the switch.
+
+export interface TerminalPlan {
+  mid: string;
+  environment: string;
+  template: Record<string, unknown>;
+  existing_terminals: string[];
+  terminals: { name: string; id: string; outlet_id: string }[];
+}
+
+export const terminalsApi = {
+  plan: (mid: string, count: number, names?: string[]) =>
+    request<TerminalPlan>(
+      `/terminals/plan?mid=${encodeURIComponent(mid)}&count=${count}` +
+      (names?.length ? `&names=${encodeURIComponent(names.join(","))}` : "")
+    ),
+
+  create: (body: { mid: string; names: string[]; environment: string; confirm?: string }) =>
+    request<{ mid: string; environment: string; count: number; created: { name: string; id: string; outlet_id: string }[] }>(
+      "/terminals",
+      { method: "POST", body: JSON.stringify(body) }
+    ),
+
+  log: () =>
+    request<{ id: number; environment: string; mid: string; terminal_name: string; pag_id: string; created_at: string }[]>(
+      "/terminals/log"
+    ),
+};

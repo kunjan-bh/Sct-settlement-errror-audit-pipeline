@@ -12,8 +12,9 @@ from app.models.partner_mapping import PartnerMapping
 from app.models.issue_status import IssueStatus
 from app.models.app_setting import AppSetting
 from app.models.dispute_status import DisputeStatus
+from app.models.terminal_log import TerminalLog
 
 __all__ = [
     "Batch", "Transaction", "ClassificationRule", "PartnerMapping", "IssueStatus",
-    "AppSetting", "DisputeStatus",
+    "AppSetting", "DisputeStatus", "TerminalLog",
 ]

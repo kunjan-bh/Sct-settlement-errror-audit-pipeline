@@ -12,6 +12,13 @@ const settlementItems = [
 // Outside the dropdown: general config (Partner Mapping) and the success-
 // side report (Settlement Type Report) -- neither is part of the
 // batch/error-audit workflow the dropdown groups, so both stay top-level.
+// Smart Withdrawal groups the merchant-provisioning tools, which change the
+// switch rather than report on it -- kept apart from the reporting tabs for
+// that reason.
+const withdrawalItems = [
+  { to: "/smart-withdrawal/add-terminal", label: "Add Terminal" },
+];
+
 const topLevelItems = [
   { to: "/partner-mapping", label: "Partner Mapping" },
   { to: "/settlement-type", label: "Settlement Type Report" },
@@ -44,6 +51,7 @@ function HoverUnderline() {
 export default function Layout() {
   const location = useLocation();
   const isInSection = settlementItems.some((item) => location.pathname.startsWith(item.to));
+  const isInWithdrawal = location.pathname.startsWith("/smart-withdrawal");
 
   return (
     <div className="min-h-screen bg-neutral-50">
@@ -85,6 +93,44 @@ export default function Layout() {
             >
               <div className="flex items-center gap-1 bg-white border border-neutral-200 rounded-lg shadow-lg p-1.5 whitespace-nowrap">
                 {settlementItems.map((item) => (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    className={({ isActive }) =>
+                      `group relative px-3 py-1.5 rounded-md text-sm font-medium whitespace-nowrap transition-colors ${
+                        isActive
+                          ? "bg-neutral-900 text-white"
+                          : "text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900"
+                      }`
+                    }
+                  >
+                    {item.label}
+                    <HoverUnderline />
+                  </NavLink>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="group/sw relative">
+            <button
+              type="button"
+              className={`group relative px-3 py-1.5 rounded-md text-sm font-medium whitespace-nowrap transition-colors duration-150 inline-flex items-center gap-1.5 cursor-pointer ${
+                isInWithdrawal ? "bg-neutral-900 text-white" : "text-neutral-500 hover:text-neutral-900"
+              }`}
+            >
+              Smart Withdrawal
+              <FiChevronDown className="text-xs transition-transform duration-200 group-hover:rotate-180" />
+              <HoverUnderline />
+            </button>
+
+            <div
+              className="absolute left-0 top-full pt-2 z-20 invisible opacity-0 -translate-y-1.5
+                         transition-all duration-200 ease-out
+                         group-hover/sw:visible group-hover/sw:opacity-100 group-hover/sw:translate-y-0"
+            >
+              <div className="flex items-center gap-1 bg-white border border-neutral-200 rounded-lg shadow-lg p-1.5 whitespace-nowrap">
+                {withdrawalItems.map((item) => (
                   <NavLink
                     key={item.to}
                     to={item.to}

@@ -51,4 +51,7 @@ def create_app(config_class=Config):
     from app.routes.reconcile import reconcile_bp
     app.register_blueprint(reconcile_bp)
 
+    from app.routes.terminals import terminals_bp
+    app.register_blueprint(terminals_bp)
+
     return app
