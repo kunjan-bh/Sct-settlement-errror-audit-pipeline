@@ -104,19 +104,97 @@ def assert_read_only(sql: str) -> None:
         )
 
 
-def core_db_config() -> dict:
-    """CORE_DB_* from the environment. Password included -- callers must not
-    log or return this."""
+LIVE = "live"
+UAT = "uat"
+ENVIRONMENTS = (LIVE, UAT)
+
+# Which switch every read goes to. Held in the database rather than per
+# browser, because the server does the querying: if it were a browser setting,
+# one tab on UAT would silently change what another tab on live was reading.
+_ENV_SETTING_KEY = "core_db_environment"
+
+
+def active_environment() -> str:
+    """
+    The switch currently selected. Live unless someone chose otherwise, and
+    live again if the stored value is anything unexpected -- defaulting to
+    production is the safe direction for a read-only connection, and a typo
+    should not quietly point reports at test data.
+    """
+    try:
+        from app.models.app_setting import AppSetting
+
+        row = AppSetting.query.filter_by(key=_ENV_SETTING_KEY).first()
+        value = (row.value if row else "") or LIVE
+    except Exception:  # noqa: BLE001 - no app context, or the table is not there yet
+        value = LIVE
+    return value if value in ENVIRONMENTS else LIVE
+
+
+def set_active_environment(name: str) -> str:
+    """Switch which database everything reads from. Refuses a name it does not
+    know rather than falling through to a default."""
+    if name not in ENVIRONMENTS:
+        raise ValueError(f"Unknown environment {name!r}; expected one of {', '.join(ENVIRONMENTS)}.")
+
+    from app.extensions import db
+    from app.models.app_setting import AppSetting
+
+    row = AppSetting.query.filter_by(key=_ENV_SETTING_KEY).first()
+    if row is None:
+        row = AppSetting(key=_ENV_SETTING_KEY, value=name)
+        db.session.add(row)
+    else:
+        row.value = name
+    db.session.commit()
+    return name
+
+
+def _env_prefix(name: str) -> str:
+    return "CORE_DB_" if name == LIVE else "CORE_DB_UAT_"
+
+
+def core_db_config(environment: str | None = None) -> dict:
+    """
+    Connection settings for the selected switch. Password included -- callers
+    must not log or return this.
+
+    Timeouts and the row cap are deliberately shared: they are about protecting
+    a database from this application, and that applies to UAT too.
+    """
+    name = environment or active_environment()
+    p = _env_prefix(name)
     return {
-        "host": os.getenv("CORE_DB_HOST", "").strip(),
-        "port": int(os.getenv("CORE_DB_PORT", "5432") or 5432),
-        "dbname": os.getenv("CORE_DB_NAME", "").strip(),
-        "user": os.getenv("CORE_DB_USER", "").strip(),
-        "password": os.getenv("CORE_DB_PASSWORD", ""),
+        "environment": name,
+        "host": os.getenv(f"{p}HOST", "").strip(),
+        "port": int(os.getenv(f"{p}PORT", "5432") or 5432),
+        "dbname": os.getenv(f"{p}NAME", "").strip(),
+        "user": os.getenv(f"{p}USER", "").strip(),
+        "password": os.getenv(f"{p}PASSWORD", ""),
         "statement_timeout": int(os.getenv("CORE_DB_STATEMENT_TIMEOUT", "60") or 60),
         "max_rows": int(os.getenv("CORE_DB_MAX_ROWS", "200000") or 200000),
         "connect_timeout": int(os.getenv("CORE_DB_CONNECT_TIMEOUT", "10") or 10),
     }
+
+
+def environment_options() -> list[dict]:
+    """
+    What the toggle can offer, and whether each is actually usable. An option
+    that cannot connect is shown as unavailable rather than hidden, so a
+    missing host reads as "not configured yet" instead of the toggle
+    mysteriously having one side.
+    """
+    out = []
+    for name in ENVIRONMENTS:
+        cfg = core_db_config(name)
+        out.append({
+            "name": name,
+            "configured": bool(cfg["host"] and cfg["dbname"] and cfg["user"]),
+            "host": cfg["host"],
+            "database": cfg["dbname"],
+            "active": name == active_environment(),
+        })
+    return out
 
 
 def core_db_status() -> dict:
@@ -128,6 +206,7 @@ def core_db_status() -> dict:
     cfg = core_db_config()
     configured = bool(cfg["host"] and cfg["dbname"] and cfg["user"])
     status = {
+        "environment": cfg["environment"],
         "configured": configured,
         "host": cfg["host"],
         "port": cfg["port"],
@@ -138,7 +217,10 @@ def core_db_status() -> dict:
         "latency_ms": None,
     }
     if not configured:
-        status["error"] = "CORE_DB_HOST / CORE_DB_NAME / CORE_DB_USER are not set in backend/.env"
+        prefix = _env_prefix(cfg["environment"])
+        status["error"] = (
+            f"{prefix}HOST / {prefix}NAME / {prefix}USER are not set in backend/.env"
+        )
         return status
 
     started = time.perf_counter()
@@ -161,9 +243,10 @@ def connect() -> psycopg.Connection:
     """
     cfg = core_db_config()
     if not (cfg["host"] and cfg["dbname"] and cfg["user"]):
+        p = _env_prefix(cfg["environment"])
         raise RuntimeError(
-            "The switch database is not configured. Set CORE_DB_HOST, "
-            "CORE_DB_NAME, CORE_DB_USER and CORE_DB_PASSWORD in backend/.env."
+            f"The {cfg['environment'].upper()} switch is not configured. Set {p}HOST, "
+            f"{p}NAME, {p}USER and {p}PASSWORD in backend/.env."
         )
 
     options = " ".join((
@@ -178,7 +261,7 @@ def connect() -> psycopg.Connection:
         options=options,
         autocommit=False,
         row_factory=dict_row,
-        application_name="smartqr-audit (read-only)",
+        application_name=f"smartqr-audit {cfg['environment']} (read-only)",
     )
 
 

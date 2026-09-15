@@ -1021,3 +1021,24 @@ export const entityEmailApi = {
       body: JSON.stringify(body),
     }),
 };
+
+// --- Which switch we are reading -------------------------------------------
+// Server-wide, not per browser: the server does the querying.
+
+export interface EnvOption {
+  name: "live" | "uat";
+  configured: boolean;
+  host: string;
+  database: string;
+  active: boolean;
+}
+
+export const environmentApi = {
+  get: () => request<{ active: string; options: EnvOption[] }>("/disputes/environment"),
+
+  set: (environment: string) =>
+    request<{ active: string; options: EnvOption[] }>("/disputes/environment", {
+      method: "PUT",
+      body: JSON.stringify({ environment }),
+    }),
+};

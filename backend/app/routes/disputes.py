@@ -16,7 +16,13 @@ from flask import Blueprint, jsonify, request, send_file
 
 from app.extensions import db
 from app.models.dispute_status import DISPUTE_STATUSES, DisputeStatus
-from app.services.core_db import ReadOnlyViolation, core_db_status
+from app.services.core_db import (
+    ReadOnlyViolation,
+    active_environment,
+    core_db_status,
+    environment_options,
+    set_active_environment,
+)
 from app.services.dispute_export import generate_dispute_xlsx
 from app.services.dispute_service import build_disputes
 from app.services.session_service import attach_to_current_session
@@ -230,3 +236,48 @@ def export_disputes():
         as_attachment=True,
         download_name=name,
     )
+
+
+@disputes_bp.get("/environment")
+def get_environment():
+    """Which switch is selected, and what the toggle can offer."""
+    return jsonify({
+        "active": active_environment(),
+        "options": environment_options(),
+    })
+
+
+@disputes_bp.put("/environment")
+def put_environment():
+    """
+    Point every read at live or UAT.
+
+    Server-wide and stored, not per browser: the server does the querying, so
+    a per-tab setting would mean one tab quietly changing what another is
+    reading.
+    """
+    payload = request.get_json(silent=True) or {}
+    name = (payload.get("environment") or "").strip().lower()
+
+    chosen = next((o for o in environment_options() if o["name"] == name), None)
+    if chosen is None:
+        return jsonify({"error": f"Unknown environment {name!r}."}), 400
+    if not chosen["configured"]:
+        # Falling back to live here would be the worst outcome: someone asks
+        # for UAT, gets production, and has no way of knowing.
+        prefix = "CORE_DB_UAT_" if name == "uat" else "CORE_DB_"
+        return jsonify({
+            "error": f"{name.upper()} is not configured — set {prefix}HOST, "
+                     f"{prefix}NAME and {prefix}USER in backend/.env first."
+        }), 400
+
+    try:
+        set_active_environment(name)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    return jsonify({
+        "active": active_environment(),
+        "options": environment_options(),
+        "status": core_db_status(),
+    })

@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { FiChevronDown, FiSettings } from "react-icons/fi";
 import DisputeWatcher from "./DisputeWatcher";
+import EnvironmentToggle from "./EnvironmentToggle";
 
 // Batch-scoped workflow, grouped under one "Settlement Error" hover menu.
 const settlementItems = [
@@ -120,7 +121,10 @@ export default function Layout() {
 
           {/* Mounted here rather than on the disputes page so it keeps
               watching wherever the operator navigates. */}
-          <div className="ml-auto flex items-center">
+          <div className="ml-auto flex items-center gap-3">
+            {/* Which database everything reads from. Sits beside the alerts
+                rather than inside a page: it changes what every page shows. */}
+            <EnvironmentToggle />
             <DisputeWatcher compact intervalMinutes={10} />
           </div>
 
