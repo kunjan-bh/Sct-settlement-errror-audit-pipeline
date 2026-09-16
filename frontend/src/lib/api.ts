@@ -12,6 +12,25 @@ export type PartnerMapping = {
   active: boolean;
 };
 
+/**
+ * An error that kept the response body.
+ *
+ * Still a plain Error with the same message, so every existing `catch` reads
+ * the same; the body is there for the few callers that need more than a
+ * sentence -- Add Terminal shows the steps that ran before a write failed.
+ */
+export class ApiError extends Error {
+  status: number;
+  body: Record<string, unknown>;
+
+  constructor(message: string, status: number, body: Record<string, unknown>) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, {
     headers: { "Content-Type": "application/json" },
@@ -19,7 +38,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `Request failed: ${res.status}`);
+    throw new ApiError(body.error || `Request failed: ${res.status}`, res.status, body);
   }
   if (res.status === 204) return undefined as T;
   return res.json();
@@ -1046,12 +1065,47 @@ export const environmentApi = {
 // --- Adding terminals -------------------------------------------------------
 // The one part of the app that writes to the switch.
 
+export interface TerminalRow {
+  name: string;
+  id: string;
+  outlet_id: string;
+  notification_id: string;
+}
+
+/**
+ * One thing the server did, recorded as it did it.
+ *
+ * The screen replays these in order. They are a record, not a script: a step
+ * is only in the list because that statement ran.
+ */
+export interface TerminalStep {
+  n: number;
+  kind: "lookup" | "insert" | "skip" | "commit";
+  title: string;
+  detail: string | null;
+  note: string | null;
+  terminal: string | null;
+  table: string | null;
+  status: "ok" | "skipped" | "failed";
+}
+
 export interface TerminalPlan {
   mid: string;
   environment: string;
   template: Record<string, unknown>;
   existing_terminals: string[];
-  terminals: { name: string; id: string; outlet_id: string }[];
+  skipped: string[];
+  notification_code: string;
+  terminals: TerminalRow[];
+}
+
+export interface TerminalResult {
+  mid: string;
+  environment: string;
+  count: number;
+  created: TerminalRow[];
+  skipped: string[];
+  steps: TerminalStep[];
 }
 
 export const terminalsApi = {
@@ -1062,10 +1116,7 @@ export const terminalsApi = {
     ),
 
   create: (body: { mid: string; names: string[]; environment: string; confirm?: string }) =>
-    request<{ mid: string; environment: string; count: number; created: { name: string; id: string; outlet_id: string }[] }>(
-      "/terminals",
-      { method: "POST", body: JSON.stringify(body) }
-    ),
+    request<TerminalResult>("/terminals", { method: "POST", body: JSON.stringify(body) }),
 
   log: () =>
     request<{ id: number; environment: string; mid: string; terminal_name: string; pag_id: string; created_at: string }[]>(

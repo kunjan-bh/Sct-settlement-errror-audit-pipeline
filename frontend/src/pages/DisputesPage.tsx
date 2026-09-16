@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   FiAlertTriangle, FiChevronDown, FiChevronRight, FiDatabase, FiLock,
-  FiRefreshCw, FiSearch, FiDownload,
+  FiRefreshCw, FiDownload,
 } from "react-icons/fi";
 import { NEW_DISPUTES_EVENT } from "../components/DisputeWatcher";
 import { localIso, localIsoDaysAgo } from "../lib/localdate";
@@ -288,7 +288,9 @@ export default function DisputesPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("open");
-  const [search, setSearch] = useState("");
+  // No search box on this page any more; the filter below is kept because the
+  // aggregator tabs still run through it.
+  const [search] = useState("");
   const [entity, setEntity] = useState("");
   const [open, setOpen] = useState<Set<string>>(new Set());
   const [busyKey, setBusyKey] = useState<string | null>(null);

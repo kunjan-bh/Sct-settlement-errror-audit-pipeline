@@ -22,4 +22,8 @@ with app.app_context():
         print(f"Retry reconciliation: {stats['resolved']} failures already settled by a reprocess")
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5000)
+    # 0.0.0.0 so the dev server is reachable from other machines on the LAN,
+    # not just this one. Vite proxies /api server-side, so strictly only Vite
+    # needs exposing -- but binding here too means the API can be hit directly
+    # for testing from another machine.
+    app.run(debug=True, host="0.0.0.0", port=5000)

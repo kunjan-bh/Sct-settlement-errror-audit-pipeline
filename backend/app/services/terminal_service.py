@@ -1,16 +1,20 @@
 """
-Adding QR terminals to a merchant: an outlet, a PAG and a PAP for each one.
+Adding QR terminals to a merchant.
 
-A terminal is three rows, and they have to agree with each other:
+A terminal is four rows, and they have to agree with each other:
 
-    shared.merchant_outlets   id = <new outlet id>, title = terminal name
-    shared.merchant_pags      id = <new pag id>, outlet_id = the outlet above
-    shared.merchant_paps      id = the SAME pag id, pag_id = it too,
-                              outlet_id = the outlet above, tid = terminal name
+    shared.merchant_outlets           id = <new outlet id>, title = name
+    shared.merchant_pags              id = <new pag id>, outlet_id = outlet
+    shared.merchant_paps              id = the SAME pag id, pag_id = it too,
+                                      outlet_id = outlet, tid = name
+    shared.paps_notification_apps_map id = <new id>, pap_id = the pap above,
+                                      code = SMARTQR_WITHDRAWAL
 
-So each terminal gets two fresh ids: one for its outlet, one shared by its PAG
-and PAP. They are never the same value, and the outlet row must exist or the
-PAG points at nothing.
+So each terminal gets three fresh ids: its outlet, one shared by its PAG and
+PAP, and one for the notification mapping. Each row must exist before the row
+that references it, or the references point at nothing -- which is exactly what
+happened to three notification rows on 083000000003524, whose pap_id values
+match no PAP at all.
 
 This is the one part of the application that writes to the switch, and it is
 kept apart from core_db deliberately. core_db is read-only three times over and
@@ -18,7 +22,7 @@ should stay that way: everything else in this app reports on the switch and has
 no business changing it.
 
 So this module opens its own connection, and that connection may insert into
-exactly three tables and do nothing else. Any other statement is refused before
+exactly four tables and do nothing else. Any other statement is refused before
 it is sent. The point is that widening what the app can write should require
 editing this file, not just passing it different SQL.
 
@@ -45,13 +49,52 @@ _WRITABLE = (
     "shared.merchant_outlets",
     "shared.merchant_pags",
     "shared.merchant_paps",
+    "shared.paps_notification_apps_map",
 )
+
+# What a new terminal is registered for. The merchant's existing rows are not
+# copied here: 083000000002524 is on BHZ_SOUND_BOX, which is a different device
+# entirely, and inheriting it would register a QR terminal as a sound box.
+NOTIFICATION_APP_CODE = "SMARTQR_WITHDRAWAL"
 
 SYSTEM_ACTOR = json.dumps({"label": "SYSTEM", "value": "SYSTEM"})
 
 
 class TerminalError(Exception):
-    """Anything that should stop a terminal being created, said plainly."""
+    """
+    Anything that should stop a terminal being created, said plainly.
+
+    Carries the steps that had run when it was raised, so a failure can show
+    the operator how far it got and that it was rolled back, rather than a
+    bare error with no account of what touched the switch.
+    """
+
+    def __init__(self, message: str, steps: list[dict] | None = None) -> None:
+        super().__init__(message)
+        self.steps = steps or []
+
+
+class Steps:
+    """
+    A record of what was actually done, in the order it was done.
+
+    The screen replays this afterwards, one step at a time, so the operator can
+    read what happened to each table instead of being handed a bare "created 3
+    terminals". Every entry is written at the moment the thing happens, so the
+    replay cannot show a step that did not run -- if the transaction rolls back
+    half way, the steps stop where the work stopped.
+    """
+
+    def __init__(self) -> None:
+        self.items: list[dict] = []
+
+    def add(self, kind, title, *, detail=None, note=None, terminal=None,
+            table=None, status="ok") -> None:
+        self.items.append({
+            "n": len(self.items) + 1,
+            "kind": kind, "title": title, "detail": detail, "note": note,
+            "terminal": terminal, "table": table, "status": status,
+        })
 
 
 def _assert_insert_only(sql: str) -> None:
@@ -181,6 +224,16 @@ def suggest_names(mid: str, count: int) -> list[str]:
     return out
 
 
+_INSERT_NOTIFICATION = """
+INSERT INTO shared.paps_notification_apps_map (
+    id, pap_id, notification_apps_code, active, device_serial_number,
+    pap_description, created_at, updated_at, updated_by, gmid, is_deleted
+) VALUES (
+    %(id)s, %(pap_id)s, %(code)s, true, %(device_serial_number)s,
+    %(pap_description)s, %(now)s, %(now)s, %(actor)s, %(gmid)s, false
+)
+"""
+
 _INSERT_OUTLET = """
 INSERT INTO shared.merchant_outlets (
     gmid, id, deleted, title, type, address_state, address_district,
@@ -236,10 +289,12 @@ def _plan_one(mid: str, name: str, tpl: dict, now: datetime) -> dict:
     """
     pag_id = str(uuid.uuid4())
     outlet_id = str(uuid.uuid4())
+    notification_id = str(uuid.uuid4())
     return {
         "name": name,
         "id": pag_id,
         "outlet_id": outlet_id,
+        "notification_id": notification_id,
         "outlet": {
             "gmid": mid, "id": outlet_id, "title": name,
             "type": Json(tpl.get("outlet_type")),
@@ -282,6 +337,17 @@ def _plan_one(mid: str, name: str, tpl: dict, now: datetime) -> dict:
             "now": now, "actor": SYSTEM_ACTOR,
             "push": bool(tpl.get("is_push_notification_enabled")),
         },
+        "notification": {
+            "id": notification_id,
+            # The PAP this notifies for, not a fresh id. A random value here
+            # is what left three rows on 083000000003524 pointing at no PAP.
+            "pap_id": pag_id,
+            "code": NOTIFICATION_APP_CODE,
+            "device_serial_number": name,
+            "pap_description": Json({"mid": mid, "tid": name, "gmid": mid}),
+            "gmid": mid,
+            "now": now, "actor": SYSTEM_ACTOR,
+        },
     }
 
 
@@ -302,6 +368,7 @@ def _adapt(params: dict) -> dict:
 def plan_terminals(mid: str, names: list[str]) -> dict:
     """What would be created, without creating it."""
     tpl = terminal_template(mid)
+    existing = existing_names(mid)
     now = datetime.now()
     return {
         "mid": mid,
@@ -319,9 +386,14 @@ def plan_terminals(mid: str, names: list[str]) -> dict:
             "allowed_txn_types": tpl.get("allowed_txn_types"),
             "label": tpl.get("label"),
         },
-        "existing_terminals": existing_names(mid),
+        "existing_terminals": existing,
+        "skipped": [n for n in names if n.lower() in {e.lower() for e in existing}],
+        "notification_code": NOTIFICATION_APP_CODE,
         "terminals": [
-            {"name": p["name"], "id": p["id"], "outlet_id": p["outlet_id"]}
+            {
+                "name": p["name"], "id": p["id"], "outlet_id": p["outlet_id"],
+                "notification_id": p["notification_id"],
+            }
             for p in (_plan_one(mid, n, tpl, now) for n in names)
         ],
     }
@@ -331,9 +403,9 @@ def create_terminals(mid: str, names: list[str], environment: str) -> dict:
     """
     Create the terminals, both rows each, all in one transaction.
 
-    All or nothing, all three tables: an outlet with no PAG, or a PAG with no
-    PAP, is a terminal that half exists and cannot take a payment. Worse than
-    the request simply failing.
+    All or nothing, all four tables: an outlet with no PAG, a PAG with no PAP,
+    or a PAP with no notification mapping is a terminal that half exists.
+    Worse than the request simply failing.
     """
     mid = (mid or "").strip()
     names = [n.strip() for n in names if n and n.strip()]
@@ -342,15 +414,43 @@ def create_terminals(mid: str, names: list[str], environment: str) -> dict:
     if len(names) != len(set(n.lower() for n in names)):
         raise TerminalError("Terminal names must differ from each other.")
 
-    clash = {n.lower() for n in existing_names(mid)} & {n.lower() for n in names}
-    if clash:
-        raise TerminalError(
-            f"{mid} already has a terminal called {', '.join(sorted(clash))}."
-        )
+    steps = Steps()
+
+    # A name the merchant already has is skipped, not an error: asking for
+    # "Terminal 1..5" when 1 and 2 exist should give you 3, 4 and 5 rather than
+    # refusing the lot. A skip is recorded as loudly as a create.
+    taken = {n.lower() for n in existing_names(mid)}
+    wanted, skipped = [], []
+    for n in names:
+        if n.lower() in taken:
+            skipped.append(n)
+            steps.add(
+                "skip", f"Skipped {n}",
+                detail=f"{mid} already has a terminal by that name",
+                note="Nothing was written for it. The rest carry on.",
+                terminal=n, status="skipped",
+            )
+        else:
+            wanted.append(n)
+
+    if not wanted:
+        return {
+            "mid": mid, "environment": environment, "created": [],
+            "skipped": skipped, "count": 0, "steps": steps.items,
+        }
 
     tpl = terminal_template(mid)
+    steps.add(
+        "lookup", "Read an existing terminal to copy",
+        detail=(f"{tpl.get('pag_name') or 'existing terminal'} · "
+                f"processor {tpl.get('processor') or '—'} · "
+                f"MCC {tpl.get('mcc') or '—'}"),
+        note="Processor, payment modes, MCC and member code are taken from a row "
+             "the switch already accepted. Only the name differs on the new ones.",
+    )
+
     now = datetime.now()
-    plans = [_plan_one(mid, n, tpl, now) for n in names]
+    plans = [_plan_one(mid, n, tpl, now) for n in wanted]
 
     created = []
     with _write_connection(environment) as conn:
@@ -362,21 +462,82 @@ def create_terminals(mid: str, names: list[str], environment: str) -> dict:
                     # at nothing.
                     _assert_insert_only(_INSERT_OUTLET)
                     cur.execute(_INSERT_OUTLET, _adapt(p["outlet"]))
+                    steps.add(
+                        "insert", f"{p['name']} — outlet created",
+                        table="shared.merchant_outlets",
+                        detail=f"id {p['outlet_id']} · title “{p['name']}”",
+                        note="First, because the PAG points at it. The other way "
+                             "round would leave a PAG referencing nothing.",
+                        terminal=p["name"],
+                    )
+
                     _assert_insert_only(_INSERT_PAG)
                     cur.execute(_INSERT_PAG, _adapt(p["pag"]))
+                    steps.add(
+                        "insert", f"{p['name']} — PAG created",
+                        table="shared.merchant_pags",
+                        detail=f"id {p['id']} · outlet_id {p['outlet_id']}",
+                        note="Carries the outlet just created, so the terminal "
+                             "hangs off the right place.",
+                        terminal=p["name"],
+                    )
+
                     _assert_insert_only(_INSERT_PAP)
                     cur.execute(_INSERT_PAP, _adapt(p["pap"]))
+                    steps.add(
+                        "insert", f"{p['name']} — PAP created",
+                        table="shared.merchant_paps",
+                        detail=f"id {p['id']} · pag_id {p['id']} · tid “{p['name']}”",
+                        note="Shares its id with the PAG on purpose — that is how "
+                             "this merchant's existing terminals are shaped.",
+                        terminal=p["name"],
+                    )
+
+                    # Last: it references the PAP created immediately above.
+                    _assert_insert_only(_INSERT_NOTIFICATION)
+                    cur.execute(_INSERT_NOTIFICATION, _adapt(p["notification"]))
+                    steps.add(
+                        "insert", f"{p['name']} — notification mapping created",
+                        table="shared.paps_notification_apps_map",
+                        detail=(f"id {p['notification_id']} · pap_id {p['id']} "
+                                f"· {NOTIFICATION_APP_CODE}"),
+                        note=f"device_serial_number is the TID “{p['name']}”, and "
+                             "pap_id is the PAP above rather than a fresh id, so the "
+                             "row resolves to a real terminal.",
+                        terminal=p["name"],
+                    )
                     created.append({
-                        "name": p["name"], "id": p["id"], "outlet_id": p["outlet_id"],
+                        "name": p["name"], "id": p["id"],
+                        "outlet_id": p["outlet_id"],
+                        "notification_id": p["notification_id"],
                     })
             conn.commit()
-        except Exception:
+            steps.add(
+                "commit", f"Committed on {environment.upper()}",
+                detail=(f"{len(created)} terminal{'' if len(created) == 1 else 's'} "
+                        f"· {len(created) * 4} rows across 4 tables"),
+                note="One transaction. Had any row failed, none of them would exist.",
+            )
+        except Exception as exc:
             conn.rollback()
-            raise
+            first = str(exc).strip().splitlines()
+            steps.add(
+                "commit", "Rolled back — nothing was created",
+                detail=first[0] if first else None,
+                note="The whole batch was undone, so the switch is exactly as it "
+                     "was before this ran.",
+                status="failed",
+            )
+            raise TerminalError(
+                first[0] if first else "The switch refused the write.",
+                steps.items,
+            ) from exc
 
     return {
         "mid": mid,
         "environment": environment,
         "created": created,
+        "skipped": skipped,
         "count": len(created),
+        "steps": steps.items,
     }

@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { FiAlertTriangle, FiCheckCircle, FiPlus, FiSearch } from "react-icons/fi";
-import { environmentApi, terminalsApi, type TerminalPlan } from "../lib/api";
+import {
+  ApiError,
+  environmentApi,
+  terminalsApi,
+  type TerminalPlan,
+  type TerminalResult,
+  type TerminalStep,
+} from "../lib/api";
+import TerminalStepTrail from "../components/TerminalStepTrail";
 
 /**
  * Add QR terminals to a merchant.
@@ -15,6 +23,10 @@ import { environmentApi, terminalsApi, type TerminalPlan } from "../lib/api";
  * has. The things that decide how money moves -- processor, payment modes,
  * MCC, allowed transaction types -- are taken from a row the switch already
  * accepted rather than guessed at here.
+ *
+ * Afterwards it walks through what it did, one table at a time, including the
+ * names it skipped. Four rows appearing silently on a live payment switch is
+ * not something anyone should have to take on trust.
  */
 
 export default function AddTerminalPage() {
@@ -27,7 +39,9 @@ export default function AddTerminalPage() {
   const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<{ name: string; id: string }[] | null>(null);
+  const [result, setResult] = useState<TerminalResult | null>(null);
+  const [steps, setSteps] = useState<TerminalStep[]>([]);
+  const [replayed, setReplayed] = useState(false);
 
   useEffect(() => {
     environmentApi.get().then((d) => setEnv(d.active)).catch(() => setEnv("live"));
@@ -39,7 +53,8 @@ export default function AddTerminalPage() {
     if (!mid.trim()) return;
     setLoading(true);
     setError(null);
-    setDone(null);
+    setResult(null);
+    setSteps([]);
     try {
       const list = names.split(",").map((n) => n.trim()).filter(Boolean);
       setPlan(await terminalsApi.plan(mid.trim(), count, list.length ? list : undefined));
@@ -55,6 +70,8 @@ export default function AddTerminalPage() {
     if (!plan) return;
     setCreating(true);
     setError(null);
+    setSteps([]);
+    setReplayed(false);
     try {
       const r = await terminalsApi.create({
         mid: plan.mid,
@@ -62,11 +79,17 @@ export default function AddTerminalPage() {
         environment: plan.environment,
         confirm: confirm.trim() || undefined,
       });
-      setDone(r.created);
+      setResult(r);
+      setSteps(r.steps ?? []);
       setPlan(null);
       setConfirm("");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not create the terminals");
+      // A failed write still has a story: which tables it got through before
+      // the switch refused, and that all of it was rolled back.
+      if (e instanceof ApiError && Array.isArray(e.body.steps)) {
+        setSteps(e.body.steps as TerminalStep[]);
+      }
     } finally {
       setCreating(false);
     }
@@ -77,9 +100,10 @@ export default function AddTerminalPage() {
       <header>
         <h1 className="text-2xl font-semibold text-neutral-900 tracking-tight">Add Terminal</h1>
         <p className="text-neutral-500 text-sm mt-1 max-w-3xl leading-relaxed">
-          Adds QR terminals to a merchant. Each one is three rows — an outlet, a PAG and
-          a PAP — copied from an existing terminal for everything except the name. This
-          writes to the switch; everywhere else in this app only reads.
+          Adds QR terminals to a merchant. Each one is four rows — an outlet, a PAG, a
+          PAP and its notification mapping — copied from an existing terminal for
+          everything except the name. This writes to the switch; everywhere else in
+          this app only reads.
         </p>
       </header>
 
@@ -131,7 +155,8 @@ export default function AddTerminalPage() {
               <p className="text-[11px] text-neutral-500 mt-0.5">
                 Taken from this merchant's newest terminal where the outlet, PAG and PAP
                 all agree. Only the name differs on the new ones — it becomes the outlet
-                title, the PAG name and the PAP's TID.
+                title, the PAG name, the PAP's TID and the notification row's device
+                serial number.
               </p>
             </div>
             <dl className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
@@ -144,6 +169,12 @@ export default function AddTerminalPage() {
                 </div>
               ))}
             </dl>
+            {!!plan.skipped?.length && (
+              <p className="text-[11px] text-amber-700">
+                Already taken, so {plan.skipped.length === 1 ? "it" : "they"} will be
+                skipped: {plan.skipped.join(", ")}
+              </p>
+            )}
             {!!plan.existing_terminals.length && (
               <p className="text-[11px] text-neutral-500">
                 Already has {plan.existing_terminals.length}:{" "}
@@ -169,6 +200,7 @@ export default function AddTerminalPage() {
                   <th className="text-left font-semibold px-5 py-2">Name / TID</th>
                   <th className="text-left font-semibold px-3 py-2">New PAG / PAP id</th>
                   <th className="text-left font-semibold px-3 py-2">New outlet id</th>
+                  <th className="text-left font-semibold px-3 py-2">Notification</th>
                 </tr>
               </thead>
               <tbody>
@@ -177,6 +209,12 @@ export default function AddTerminalPage() {
                     <td className="px-5 py-1.5 font-medium text-neutral-900">{t.name}</td>
                     <td className="px-3 py-1.5 font-mono text-neutral-500">{t.id}</td>
                     <td className="px-3 py-1.5 font-mono text-neutral-500">{t.outlet_id}</td>
+                    <td className="px-3 py-1.5 text-neutral-500">
+                      {plan.notification_code}
+                      <span className="block font-mono text-[10px] text-neutral-400">
+                        serial {t.name}
+                      </span>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -206,19 +244,35 @@ export default function AddTerminalPage() {
         </>
       )}
 
-      {done && (
+      {(creating || steps.length > 0) && (
+        <TerminalStepTrail
+          steps={steps}
+          running={creating}
+          environment={plan?.environment ?? env}
+          onFinished={() => setReplayed(true)}
+        />
+      )}
+
+      {result && replayed && (
         <section className="rounded-lg border border-emerald-200 bg-emerald-50 p-5">
           <h2 className="text-sm font-semibold text-emerald-900 flex items-center gap-2">
-            <FiCheckCircle /> Created {done.length} terminal{done.length === 1 ? "" : "s"}
+            <FiCheckCircle /> Created {result.count} terminal
+            {result.count === 1 ? "" : "s"} on {result.environment.toUpperCase()}
           </h2>
           <ul className="mt-2 space-y-1 text-xs text-emerald-900">
-            {done.map((t) => (
+            {result.created.map((t) => (
               <li key={t.id}>
                 <span className="font-medium">{t.name}</span>{" "}
                 <span className="font-mono opacity-70">{t.id}</span>
               </li>
             ))}
           </ul>
+          {!!result.skipped?.length && (
+            <p className="mt-3 text-xs text-emerald-900/70">
+              Skipped {result.skipped.join(", ")} — the merchant already had
+              {result.skipped.length === 1 ? " that name" : " those names"}.
+            </p>
+          )}
         </section>
       )}
     </div>

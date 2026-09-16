@@ -87,10 +87,13 @@ def create():
     try:
         result = create_terminals(mid, names, environment)
     except TerminalError as exc:
-        return jsonify({"error": str(exc)}), 400
+        # The steps it got through travel with the error, so the screen can show
+        # what ran and that it was undone instead of just the message.
+        return jsonify({"error": str(exc), "steps": exc.steps}), 400
     except Exception as exc:  # noqa: BLE001 - surfaced to the operator as text
         return jsonify({
-            "error": f"Could not create the terminals: {str(exc).strip().splitlines()[0][:300]}"
+            "error": f"Could not create the terminals: {str(exc).strip().splitlines()[0][:300]}",
+            "steps": [],
         }), 502
 
     for t in result["created"]:
