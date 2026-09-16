@@ -261,6 +261,9 @@ INSERT INTO shared.merchant_pags (
 )
 """
 
+# is_default stays false on the PAP. On 083000000003524 every QR terminal's
+# PAP is false and only the merchant's "Smart Withdrawal" PAP is true --
+# the outlet and the PAG are the rows that carry true.
 _INSERT_PAP = """
 INSERT INTO shared.merchant_paps (
     gmid, outlet_id, pag_id, id, is_active, deleted, label, type, recurring_fee,
@@ -276,6 +279,24 @@ INSERT INTO shared.merchant_paps (
     %(now)s, %(actor)s, null, false, %(push)s
 )
 """
+
+
+def _mcc(raw) -> dict | None:
+    """
+    The MCC as this merchant's QR terminals carry it: label and value both the
+    code.
+
+    On 083000000003524 the newest row reads {"label": "financial institution",
+    "value": "6011"} while every QR terminal on it reads {"label": "6011",
+    "value": "6011"}. The code is the part the switch acts on; the label is a
+    display string that has drifted between rows, so it is rebuilt from the
+    code rather than copied through.
+    """
+    code = raw.get("value") or raw.get("label") if isinstance(raw, dict) else raw
+    if code in (None, ""):
+        return None
+    code = str(code)
+    return {"label": code, "value": code}
 
 
 def _plan_one(mid: str, name: str, tpl: dict, now: datetime) -> dict:
@@ -309,9 +330,10 @@ def _plan_one(mid: str, name: str, tpl: dict, now: datetime) -> dict:
             "member_code": tpl.get("member_code"),
             "is_active": tpl.get("outlet_is_active") if tpl.get("outlet_is_active") is not None else True,
             "now": now, "actor": SYSTEM_ACTOR,
-            # Which outlet is the merchant's default is a separate decision from
-            # adding one, so a new outlet never claims it.
-            "is_default": False,
+            # True, because that is how every outlet on these merchants is
+            # written -- all seven on 083000000003524 and the one on
+            # 002000000168524. A false here would be the odd one out.
+            "is_default": True,
         },
         "pag": {
             "gmid": mid, "outlet_id": outlet_id, "id": pag_id,
@@ -319,14 +341,14 @@ def _plan_one(mid: str, name: str, tpl: dict, now: datetime) -> dict:
             "floor_name": tpl.get("floor_name"), "counter_name": tpl.get("counter_name"),
             "group_type": tpl.get("group_type"), "member_code": tpl.get("member_code"),
             "now": now, "actor": SYSTEM_ACTOR,
-            "is_default": False,
+            "is_default": True,
             "contact_number": tpl.get("contact_number"),
         },
         "pap": {
             "gmid": mid, "outlet_id": outlet_id, "pag_id": pag_id, "id": pag_id,
             "label": tpl.get("label"), "pap_type": tpl.get("pap_type"),
             "recurring_fee": tpl.get("recurring_fee"),
-            "mcc": Json(tpl.get("mcc")), "risk": tpl.get("risk"),
+            "mcc": Json(_mcc(tpl.get("mcc"))), "risk": tpl.get("risk"),
             "service_fee": tpl.get("service_fee"), "processor": tpl.get("processor"),
             "payment_modes": Json(tpl.get("payment_modes")),
             "mid": tpl.get("mid") or mid,
@@ -381,7 +403,7 @@ def plan_terminals(mid: str, names: list[str]) -> dict:
             "pag_type": tpl.get("pag_type"),
             "floor_name": tpl.get("floor_name"), "counter_name": tpl.get("counter_name"),
             "group_type": tpl.get("group_type"), "member_code": tpl.get("member_code"),
-            "processor": tpl.get("processor"), "mcc": tpl.get("mcc"),
+            "processor": tpl.get("processor"), "mcc": _mcc(tpl.get("mcc")),
             "payment_modes": tpl.get("payment_modes"),
             "allowed_txn_types": tpl.get("allowed_txn_types"),
             "label": tpl.get("label"),
@@ -444,7 +466,7 @@ def create_terminals(mid: str, names: list[str], environment: str) -> dict:
         "lookup", "Read an existing terminal to copy",
         detail=(f"{tpl.get('pag_name') or 'existing terminal'} · "
                 f"processor {tpl.get('processor') or '—'} · "
-                f"MCC {tpl.get('mcc') or '—'}"),
+                f"MCC {(_mcc(tpl.get('mcc')) or {}).get('value') or '—'}"),
         note="Processor, payment modes, MCC and member code are taken from a row "
              "the switch already accepted. Only the name differs on the new ones.",
     )
