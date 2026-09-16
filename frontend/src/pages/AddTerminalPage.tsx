@@ -77,8 +77,9 @@ export default function AddTerminalPage() {
       <header>
         <h1 className="text-2xl font-semibold text-neutral-900 tracking-tight">Add Terminal</h1>
         <p className="text-neutral-500 text-sm mt-1 max-w-3xl leading-relaxed">
-          Adds QR terminals to a merchant, copying an existing one for everything except
-          the name. This writes to the switch — everywhere else in this app only reads.
+          Adds QR terminals to a merchant. Each one is three rows — an outlet, a PAG and
+          a PAP — copied from an existing terminal for everything except the name. This
+          writes to the switch; everywhere else in this app only reads.
         </p>
       </header>
 
@@ -128,8 +129,9 @@ export default function AddTerminalPage() {
                 Copying this merchant's existing terminal
               </h2>
               <p className="text-[11px] text-neutral-500 mt-0.5">
-                Everything below is taken from a terminal the switch already accepted. Only
-                the name differs on the new ones.
+                Taken from this merchant's newest terminal where the outlet, PAG and PAP
+                all agree. Only the name differs on the new ones — it becomes the outlet
+                title, the PAG name and the PAP's TID.
               </p>
             </div>
             <dl className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
@@ -165,7 +167,7 @@ export default function AddTerminalPage() {
               <thead>
                 <tr className="bg-neutral-50 text-neutral-500">
                   <th className="text-left font-semibold px-5 py-2">Name / TID</th>
-                  <th className="text-left font-semibold px-3 py-2">New terminal id</th>
+                  <th className="text-left font-semibold px-3 py-2">New PAG / PAP id</th>
                   <th className="text-left font-semibold px-3 py-2">New outlet id</th>
                 </tr>
               </thead>

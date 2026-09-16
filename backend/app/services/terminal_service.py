@@ -1,16 +1,26 @@
 """
-Adding QR terminals to a merchant: shared.merchant_pags + shared.merchant_paps.
+Adding QR terminals to a merchant: an outlet, a PAG and a PAP for each one.
+
+A terminal is three rows, and they have to agree with each other:
+
+    shared.merchant_outlets   id = <new outlet id>, title = terminal name
+    shared.merchant_pags      id = <new pag id>, outlet_id = the outlet above
+    shared.merchant_paps      id = the SAME pag id, pag_id = it too,
+                              outlet_id = the outlet above, tid = terminal name
+
+So each terminal gets two fresh ids: one for its outlet, one shared by its PAG
+and PAP. They are never the same value, and the outlet row must exist or the
+PAG points at nothing.
 
 This is the one part of the application that writes to the switch, and it is
 kept apart from core_db deliberately. core_db is read-only three times over and
 should stay that way: everything else in this app reports on the switch and has
 no business changing it.
 
-So this module opens its own connection, and that connection is allowed to do
-exactly two things -- insert a row into shared.merchant_pags and a row into
-shared.merchant_paps. Any other statement is refused before it is sent. The
-point is that widening what the app can write should require editing this file,
-not just passing different SQL to it.
+So this module opens its own connection, and that connection may insert into
+exactly three tables and do nothing else. Any other statement is refused before
+it is sent. The point is that widening what the app can write should require
+editing this file, not just passing it different SQL.
 
 Every new terminal copies the merchant's existing terminal for everything
 except its name, which is what makes this safe to automate: the fields that
@@ -30,8 +40,12 @@ from psycopg.rows import dict_row
 
 from app.services.core_db import active_environment, core_db_config
 
-# The only two tables this connection may write to, and the only operation.
-_WRITABLE = ("shared.merchant_pags", "shared.merchant_paps")
+# The only tables this connection may write to, and the only operation.
+_WRITABLE = (
+    "shared.merchant_outlets",
+    "shared.merchant_pags",
+    "shared.merchant_paps",
+)
 
 SYSTEM_ACTOR = json.dumps({"label": "SYSTEM", "value": "SYSTEM"})
 
@@ -42,7 +56,7 @@ class TerminalError(Exception):
 
 def _assert_insert_only(sql: str) -> None:
     """
-    Refuse anything that is not an INSERT into one of the two allowed tables.
+    Refuse anything that is not an INSERT into one of the allowed tables.
 
     Mirrors the read-only guard in core_db: an allowlist, checked before the
     statement is sent, because the cost of being wrong here is a write to a
@@ -94,12 +108,24 @@ def _read(environment: str, sql: str, params: dict) -> list[dict]:
     return run_query(sql, params)
 
 
+# The merchant's newest complete terminal: outlet, PAG and PAP together. All
+# three are needed, because all three are being copied -- a PAG whose outlet has
+# been deleted is not a pattern worth following.
 _TEMPLATE_SQL = """
-SELECT g.*, p.label, p.type AS pap_type, p.recurring_fee, p.mcc, p.risk,
-       p.service_fee, p.processor, p.payment_modes, p.mid, p.allowed_txn_types,
-       p.certificate, p.is_push_notification_enabled
+SELECT
+    g.id AS pag_id, g.type AS pag_type, g.name AS pag_name, g.floor_name,
+    g.counter_name, g.group_type, g.member_code, g.contact_number,
+    p.label, p.type AS pap_type, p.recurring_fee, p.mcc, p.risk,
+    p.service_fee, p.processor, p.payment_modes, p.mid, p.allowed_txn_types,
+    p.certificate, p.is_push_notification_enabled,
+    o.id AS outlet_id, o.title AS outlet_title, o.type AS outlet_type,
+    o.address_state, o.address_district, o.address_municipality,
+    o.address_ward, o.address_street, o.contact_name,
+    o.contact_number AS outlet_contact_number, o.contact_email,
+    o.is_active AS outlet_is_active
 FROM shared.merchant_pags g
 JOIN shared.merchant_paps p ON p.pag_id = g.id
+JOIN shared.merchant_outlets o ON o.id = g.outlet_id
 WHERE g.gmid = %(mid)s AND COALESCE(g.deleted, false) = false
 ORDER BY g.created_on DESC NULLS LAST
 """
@@ -124,7 +150,8 @@ def terminal_template(mid: str) -> dict:
     rows = _read(active_environment(), _TEMPLATE_SQL, {"mid": mid})
     if not rows:
         raise TerminalError(
-            f"{mid} has no existing terminal to copy. Create the first one on the "
+            f"{mid} has no complete existing terminal to copy -- an outlet, a PAG "
+            "and a PAP that all point at each other. Create the first one on the "
             "switch, then this can add more like it."
         )
     return rows[0]
@@ -153,6 +180,21 @@ def suggest_names(mid: str, count: int) -> list[str]:
         n += 1
     return out
 
+
+_INSERT_OUTLET = """
+INSERT INTO shared.merchant_outlets (
+    gmid, id, deleted, title, type, address_state, address_district,
+    address_municipality, address_ward, address_street, contact_name,
+    contact_number, contact_email, member_code, is_active, created_on,
+    created_by, last_modified_on, last_modified_by, is_default
+) VALUES (
+    %(gmid)s, %(id)s, false, %(title)s, %(type)s, %(address_state)s,
+    %(address_district)s, %(address_municipality)s, %(address_ward)s,
+    %(address_street)s, %(contact_name)s, %(contact_number)s, %(contact_email)s,
+    %(member_code)s, %(is_active)s, %(now)s, %(actor)s, %(now)s, %(actor)s,
+    %(is_default)s
+)
+"""
 
 _INSERT_PAG = """
 INSERT INTO shared.merchant_pags (
@@ -184,22 +226,44 @@ INSERT INTO shared.merchant_paps (
 
 
 def _plan_one(mid: str, name: str, tpl: dict, now: datetime) -> dict:
-    """The two rows for one terminal. New ids; everything else from the
-    template."""
+    """
+    The three rows for one terminal.
+
+    Two new ids: the outlet's, and one shared by the PAG and the PAP. The
+    terminal's name appears in all three -- as the outlet title, the PAG name
+    and the PAP's TID -- which is what makes one terminal recognisable across
+    the three tables.
+    """
     pag_id = str(uuid.uuid4())
     outlet_id = str(uuid.uuid4())
     return {
         "name": name,
         "id": pag_id,
         "outlet_id": outlet_id,
+        "outlet": {
+            "gmid": mid, "id": outlet_id, "title": name,
+            "type": Json(tpl.get("outlet_type")),
+            "address_state": Json(tpl.get("address_state")),
+            "address_district": Json(tpl.get("address_district")),
+            "address_municipality": Json(tpl.get("address_municipality")),
+            "address_ward": tpl.get("address_ward"),
+            "address_street": tpl.get("address_street"),
+            "contact_name": tpl.get("contact_name"),
+            "contact_number": tpl.get("outlet_contact_number"),
+            "contact_email": tpl.get("contact_email"),
+            "member_code": tpl.get("member_code"),
+            "is_active": tpl.get("outlet_is_active") if tpl.get("outlet_is_active") is not None else True,
+            "now": now, "actor": SYSTEM_ACTOR,
+            # Which outlet is the merchant's default is a separate decision from
+            # adding one, so a new outlet never claims it.
+            "is_default": False,
+        },
         "pag": {
             "gmid": mid, "outlet_id": outlet_id, "id": pag_id,
-            "type": tpl.get("type"), "name": name,
+            "type": tpl.get("pag_type"), "name": name,
             "floor_name": tpl.get("floor_name"), "counter_name": tpl.get("counter_name"),
             "group_type": tpl.get("group_type"), "member_code": tpl.get("member_code"),
             "now": now, "actor": SYSTEM_ACTOR,
-            # A new terminal is never the merchant's default; changing which
-            # terminal is default is a different decision from adding one.
             "is_default": False,
             "contact_number": tpl.get("contact_number"),
         },
@@ -211,8 +275,6 @@ def _plan_one(mid: str, name: str, tpl: dict, now: datetime) -> dict:
             "service_fee": tpl.get("service_fee"), "processor": tpl.get("processor"),
             "payment_modes": Json(tpl.get("payment_modes")),
             "mid": tpl.get("mid") or mid,
-            # The terminal's name is its TID, which is what the example did and
-            # what makes a terminal identifiable on a statement.
             "tid": name,
             "allowed_txn_types": Json(tpl.get("allowed_txn_types")),
             "certificate": tpl.get("certificate"),
@@ -245,7 +307,11 @@ def plan_terminals(mid: str, names: list[str]) -> dict:
         "mid": mid,
         "environment": active_environment(),
         "template": {
-            "name": tpl.get("name"), "type": tpl.get("type"),
+            "copied_from": tpl.get("pag_name"),
+            "outlet_title": tpl.get("outlet_title"),
+            "outlet_type": tpl.get("outlet_type"),
+            "address_district": tpl.get("address_district"),
+            "pag_type": tpl.get("pag_type"),
             "floor_name": tpl.get("floor_name"), "counter_name": tpl.get("counter_name"),
             "group_type": tpl.get("group_type"), "member_code": tpl.get("member_code"),
             "processor": tpl.get("processor"), "mcc": tpl.get("mcc"),
@@ -265,9 +331,9 @@ def create_terminals(mid: str, names: list[str], environment: str) -> dict:
     """
     Create the terminals, both rows each, all in one transaction.
 
-    All or nothing: a merchant_pags row with no matching merchant_paps is a
-    terminal that exists but cannot take a payment, which is worse than the
-    request simply failing.
+    All or nothing, all three tables: an outlet with no PAG, or a PAG with no
+    PAP, is a terminal that half exists and cannot take a payment. Worse than
+    the request simply failing.
     """
     mid = (mid or "").strip()
     names = [n.strip() for n in names if n and n.strip()]
@@ -291,6 +357,11 @@ def create_terminals(mid: str, names: list[str], environment: str) -> dict:
         try:
             with conn.cursor() as cur:
                 for p in plans:
+                    # Outlet first: the PAG references it, so creating them the
+                    # other way round would leave a window where the PAG points
+                    # at nothing.
+                    _assert_insert_only(_INSERT_OUTLET)
+                    cur.execute(_INSERT_OUTLET, _adapt(p["outlet"]))
                     _assert_insert_only(_INSERT_PAG)
                     cur.execute(_INSERT_PAG, _adapt(p["pag"]))
                     _assert_insert_only(_INSERT_PAP)
