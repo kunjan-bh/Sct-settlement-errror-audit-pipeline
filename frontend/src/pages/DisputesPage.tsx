@@ -6,6 +6,7 @@ import {
 import { NEW_DISPUTES_EVENT } from "../components/DisputeWatcher";
 import { localIso, localIsoDaysAgo } from "../lib/localdate";
 import SessionBar from "../components/SessionBar";
+import RiskyErrorsPicker from "../components/RiskyErrorsPicker";
 import { cacheGet, cacheSet } from "../lib/cache";
 import {
   disputesApi, type CoreDbStatus, type Dispute, type DisputeOpStatus,
@@ -678,6 +679,11 @@ export default function DisputesPage() {
             </div>
           </div>
         </details>
+
+        <RiskyErrorsPicker
+          errorTypes={data?.error_types ?? []}
+          onSaved={() => void load(true)}
+        />
 
         <button type="button" onClick={() => void exportXlsx()} disabled={!rows.length || exporting}
           title="Download these disputes as an Excel workbook"

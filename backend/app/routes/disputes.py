@@ -6,7 +6,10 @@ merchant's current hold balance. There is no upload here: the point of this
 tab is that the data comes from the source, so nothing has to be exported,
 mailed around and re-imported before anyone can see it.
 
-Read-only throughout -- see services/core_db.py.
+Read-only against the switch throughout -- see services/core_db.py. The
+one thing here that writes writes to our own database: which errors are
+worth verifying before a retry, which is an operator's judgement, not the
+switch's.
 """
 
 import io
@@ -26,6 +29,11 @@ from app.services.core_db import (
 from app.services.dispute_export import generate_dispute_xlsx
 from app.services.dispute_service import build_disputes
 from app.services.session_service import attach_to_current_session
+from app.services.settings_service import (
+    set_settings,
+    sync_managed_rules,
+    verify_remark_patterns,
+)
 
 disputes_bp = Blueprint("disputes", __name__, url_prefix="/api/disputes")
 
@@ -236,6 +244,44 @@ def export_disputes():
         as_attachment=True,
         download_name=name,
     )
+
+
+@disputes_bp.get("/risky-errors")
+def get_risky_errors():
+    """The error patterns currently marked worth verifying before a retry."""
+    return jsonify({"patterns": verify_remark_patterns()})
+
+
+@disputes_bp.put("/risky-errors")
+def put_risky_errors():
+    """
+    Replace the risky-error list.
+
+    Writes the same setting the Settings page edits and re-syncs the
+    classification rules, so ticking an error here also makes the batch flow
+    file it under "needs verification". One list, one meaning -- Disputes and
+    the batch flow disagreeing about which errors are dangerous is how a
+    merchant gets paid twice.
+    """
+    payload = request.get_json(silent=True) or {}
+    patterns = payload.get("patterns")
+    if not isinstance(patterns, list):
+        return jsonify({"error": "'patterns' must be a list."}), 400
+
+    cleaned, seen = [], set()
+    for p in patterns:
+        text = str(p or "").strip().lower()
+        # Commas are the separator in the stored setting, so a pattern
+        # containing one would silently split into two on the way back out.
+        text = text.replace(",", " ").replace(";", " ")
+        text = " ".join(text.split())
+        if text and text not in seen:
+            seen.add(text)
+            cleaned.append(text)
+
+    set_settings({"verify_remark_patterns": ", ".join(cleaned)})
+    sync_managed_rules("verify_remark_patterns")
+    return jsonify({"patterns": cleaned})
 
 
 @disputes_bp.get("/environment")

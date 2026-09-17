@@ -811,10 +811,31 @@ export interface DisputeTotals {
   listed_count: number;
 }
 
+/**
+ * One distinct error seen in the window, and whether it is marked risky.
+ *
+ * Built from the rows on screen rather than a fixed list — the switch produces
+ * wording nobody has seen before often enough that a hardcoded set goes stale
+ * quietly. `seen: false` means a configured pattern matched nothing this
+ * window, listed anyway so it can be found and removed.
+ */
+export interface DisputeErrorType {
+  pattern: string;
+  label: string;
+  count: number;
+  amount: number;
+  held_count: number;
+  risky: boolean;
+  seen: boolean;
+  matched_by: string[];
+}
+
 export interface DisputeResponse {
   range: { from: string; to: string };
   totals: DisputeTotals;
   by_partner: { partner: string; count: number; amount: number; held: number }[];
+  error_types: DisputeErrorType[];
+  risky_patterns: string[];
   disputes: Dispute[];
 }
 
@@ -831,6 +852,16 @@ export interface CoreDbStatus {
 
 export const disputesApi = {
   status: () => request<CoreDbStatus>("/disputes/status"),
+
+  /** Which errors are worth verifying with the partner before a retry. The
+   *  same list the Settings page and the batch classification use. */
+  riskyErrors: () => request<{ patterns: string[] }>("/disputes/risky-errors"),
+
+  setRiskyErrors: (patterns: string[]) =>
+    request<{ patterns: string[] }>("/disputes/risky-errors", {
+      method: "PUT",
+      body: JSON.stringify({ patterns }),
+    }),
 
   list: (from: string, to: string) =>
     request<DisputeResponse>(`/disputes?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),

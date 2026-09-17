@@ -31,9 +31,17 @@ from app.services.settings_service import get_settings
 # "VALIDATION_FAILED" are chased completely differently.
 _UNSETTLED_STATUSES = ("FAILED", "PENDING", "IN_PROGRESS")
 
-# Held money plus one of these remarks is the dangerous combination: the far
-# end may well have paid out, so the merchant could be paid twice if this is
-# simply retried. Kept in step with the operator-editable verify list.
+# Held money plus one of these errors is the dangerous combination: the far end
+# may well have paid out, so the merchant could be paid twice if this is simply
+# retried. Which errors those are is the operator's call, not a constant -- the
+# pair below is only what a fresh install starts with, and the Disputes page
+# edits the list from the error types actually turning up in the data.
+#
+# The same list drives the "needs verification" classification category, so a
+# change here shows up in the batch flow too. That is deliberate: an error is
+# either worth verifying before retrying or it is not, and having Disputes and
+# the batch flow disagree about which is which is how a merchant gets paid
+# twice.
 _DEFAULT_DOUBLE_PAY_HINTS = ("connection reset", "connection was closed")
 
 
@@ -170,6 +178,51 @@ def _reason(row: dict) -> str:
     if current:
         return current.replace("_", " ").title()
     return remark or "Unknown"
+
+
+def _error_types(disputes: list[dict], hints: tuple[str, ...]) -> list[dict]:
+    """
+    Every distinct error in the window, with what it costs and whether it is
+    marked risky.
+
+    Built from the rows on screen rather than from a fixed list, because the
+    switch produces wording nobody has seen before often enough that a
+    hardcoded set goes stale quietly. A configured pattern that matched nothing
+    this window is still listed -- with a count of zero -- so a rule can be
+    found and removed instead of lingering invisibly.
+    """
+    seen: dict[str, dict] = {}
+    for d in disputes:
+        label = (d.get("reason") or "Unknown").strip() or "Unknown"
+        key = label.lower()
+        e = seen.setdefault(key, {
+            "pattern": key, "label": label, "count": 0, "amount": 0.0,
+            "held_count": 0, "risky": False, "seen": True,
+        })
+        e["count"] += 1
+        e["amount"] += d["amount"]
+        if d["held"] or d["partially_held"]:
+            e["held_count"] += 1
+
+    # An error counts as risky if any configured pattern is a substring of it,
+    # which is how the matching works on the rows themselves. Exposed per error
+    # so the dropdown can show a tick against the thing the operator reads,
+    # not against the pattern that happens to match it.
+    for e in seen.values():
+        e["risky"] = any(h in e["pattern"] for h in hints)
+        e["matched_by"] = sorted(h for h in hints if h in e["pattern"])
+
+    for h in hints:
+        if not any(h in e["pattern"] for e in seen.values()):
+            seen[h] = {
+                "pattern": h, "label": h, "count": 0, "amount": 0.0,
+                "held_count": 0, "risky": True, "seen": False, "matched_by": [h],
+            }
+
+    return sorted(
+        (dict(e, amount=round(e["amount"], 2)) for e in seen.values()),
+        key=lambda e: (-e["count"], e["label"].lower()),
+    )
 
 
 def _decision_for(row: dict, decisions: dict, scoped: dict) -> dict:
@@ -379,7 +432,15 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
         amount = _num(r.get("amount"))
         hold = _num(r.get("hold_balance"))
         total = _num(r.get("total_balance"))
-        remark_blob = f"{r.get('remarks') or ''} {r.get('remark_two') or ''}".lower()
+        reason = _reason(r)
+        # The reason as well as the raw remarks: the error types the operator
+        # ticks on the Disputes page are the reasons they can see in the list,
+        # and a reason derived from current_status ("Validation Failed") never
+        # appears in `remarks` at all. Matching only remarks would mean ticking
+        # an error in the dropdown quietly did nothing.
+        remark_blob = (
+            f"{r.get('remarks') or ''} {r.get('remark_two') or ''} {reason}"
+        ).lower()
         double_pay_risk = any(h in remark_blob for h in hints)
 
         # Balance state, decided per merchant below. A merchant holding
@@ -409,7 +470,7 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "status": r.get("status"),
             "current_status": r.get("current_status"),
             "status_code": r.get("status_code"),
-            "reason": _reason(r),
+            "reason": reason,
             "remarks": r.get("remarks"),
             "remark_two": r.get("remark_two"),
             "partner": r.get("partner"),
@@ -575,5 +636,7 @@ def build_disputes(date_from: str | date, date_to: str | date) -> dict:
             "row_excluded_count": len(row_excluded_rows),
         },
         "by_partner": sorted(by_partner.values(), key=lambda b: -b["amount"]),
+        "error_types": _error_types(disputes, hints),
+        "risky_patterns": list(hints),
         "disputes": disputes,
     }
